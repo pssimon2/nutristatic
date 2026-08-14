@@ -141,13 +141,25 @@ function actionButton(label: string, onClick: () => void): HTMLButtonElement {
   return b;
 }
 
-/** Umlauts/eszett in queries get the same transliteration as index text. */
+/**
+ * Match the index's text normalization in queries. The German index uses
+ * the ae/oe/ue/ss digraph convention; all other corpora fold diacritics to
+ * base letters (à→a, ñ→n, ç→c) with the œ→oe/æ→ae digraph exceptions.
+ */
 function transliterate(query: string): string {
+  if (indexUrl.includes("de-wiki")) {
+    return query
+      .replace(/[äÄ]/g, "ae")
+      .replace(/[öÖ]/g, "oe")
+      .replace(/[üÜ]/g, "ue")
+      .replace(/[ßẞ]/g, "ss");
+  }
   return query
-    .replace(/[äÄ]/g, "ae")
-    .replace(/[öÖ]/g, "oe")
-    .replace(/[üÜ]/g, "ue")
-    .replace(/[ßẞ]/g, "ss");
+    .replace(/[œŒ]/g, "oe")
+    .replace(/[æÆ]/g, "ae")
+    .replace(/[ßẞ]/g, "ss")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
 }
 
 function startSearch(query: string): void {
