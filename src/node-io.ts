@@ -17,6 +17,12 @@ export class FileSink implements ByteSink {
     this.buf[this.len++] = b & 0xff;
   }
 
+  /** Bulk write, bypassing the per-byte buffer. */
+  write(data: Uint8Array): void {
+    this.flush();
+    fs.writeSync(this.fd, data);
+  }
+
   flush(): void {
     if (this.len > 0) {
       fs.writeSync(this.fd, this.buf, 0, this.len);

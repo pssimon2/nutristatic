@@ -13,7 +13,8 @@
     "make-index": "tsx cli/make-index.ts",
     "merge-indexes": "tsx cli/merge-indexes.ts",
     "dump-index": "tsx cli/dump-index.ts",
-    "wordlist-index": "tsx cli/wordlist-index.ts"
+    "wordlist-index": "tsx cli/wordlist-index.ts",
+    "compress-index": "tsx cli/compress-index.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

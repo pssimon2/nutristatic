@@ -12,6 +12,7 @@ upstream/
 
 # Generated index artifacts served by the web app (rebuild via npm scripts)
 web/public/*.index
+web/public/*.idxz
 
 *.log
 

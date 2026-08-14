@@ -10,6 +10,8 @@ import {
   SyncFileReader,
   SyncFileSource,
 } from "../src/byte-source.js";
+import { CompressedRangeSource } from "../src/compressed-source.js";
+import { inflateRawBlock, parseIdxzHeader, parseIdxzTable } from "../src/idxz.js";
 import { IndexReader } from "../src/index-reader.js";
 import { ParseError } from "../src/find-expr.js";
 import { SearchSession } from "../src/search-session.js";
@@ -101,7 +103,7 @@ interface DownloadFullMsg {
 type InMsg = OpenMsg | SearchMsg | ContinueMsg | StopMsg | DownloadFullMsg;
 
 let reader: IndexReader | null = null;
-let rangeSource: HttpRangeSource | null = null;
+let rangeSource: HttpRangeSource | CompressedRangeSource | null = null;
 let diskSource: SyncFileSource | null = null;
 let session: SearchSession | null = null;
 let runToken = 0; // bumped to cancel an in-flight run
@@ -205,7 +207,12 @@ async function downloadToOpfs(
   }
   try {
     sync.truncate(0);
-    await fetchPieces(url, size, (part, off) => sync.write(part, { at: off }));
+    const viaZ = await downloadViaSidecar(url, size, (part, off) =>
+      sync.write(part, { at: off }),
+    );
+    if (!viaZ) {
+      await fetchPieces(url, size, (part, off) => sync.write(part, { at: off }));
+    }
     sync.flush();
     return new SyncFileSource(sync as SyncFileReader, size);
   } catch (e) {
@@ -249,6 +256,85 @@ class CacheChunkStore implements ChunkStore {
   }
 }
 
+/**
+ * Whole-index download via the .idxz sidecar (~half the transfer), writing
+ * decompressed blocks through `write`. Returns false if there is no valid
+ * sidecar (caller falls back to plain ranges; on partial failure the plain
+ * path rewrites every offset, so no torn state survives).
+ */
+async function downloadViaSidecar(
+  url: string,
+  size: number,
+  write: (part: Uint8Array, offset: number) => void,
+): Promise<boolean> {
+  const sidecarUrl = url + ".idxz";
+  try {
+    const headResp = await fetchWithRetry(sidecarUrl, {
+      headers: { Range: "bytes=0-19" },
+    });
+    const header = parseIdxzHeader(new Uint8Array(await headResp.arrayBuffer()));
+    if (!header || header.uncompressedSize !== size) return false;
+    const tableEnd = 20 + (header.numBlocks + 1) * 8;
+    const tableResp = await fetchWithRetry(sidecarUrl, {
+      headers: { Range: `bytes=20-${tableEnd - 1}` },
+    });
+    const table = parseIdxzTable(
+      new Uint8Array(await tableResp.arrayBuffer()),
+      header.numBlocks,
+    );
+    if (!table) return false;
+
+    // Group blocks into ~piece-sized compressed spans.
+    const spans: Array<[number, number]> = [];
+    let spanStart = 0;
+    for (let b = 1; b <= header.numBlocks; ++b) {
+      if (table[b] - table[spanStart] >= DOWNLOAD_PIECE || b === header.numBlocks) {
+        spans.push([spanStart, b]);
+        spanStart = b;
+      }
+    }
+
+    const totalComp = table[header.numBlocks];
+    let nextSpan = 0;
+    let loaded = 0;
+    const runner = async (): Promise<void> => {
+      for (;;) {
+        const idx = nextSpan++;
+        if (idx >= spans.length) return;
+        const [s, e] = spans[idx];
+        const from = header.dataStart + table[s];
+        const to = header.dataStart + table[e] - 1;
+        const resp = await fetchWithRetry(sidecarUrl, {
+          headers: { Range: `bytes=${from}-${to}` },
+        });
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        if (buf.length !== to - from + 1) throw new Error("idxz short span");
+        const jobs: Promise<void>[] = [];
+        for (let b = s; b < e; ++b) {
+          const off = table[b] - table[s];
+          const len = table[b + 1] - table[b];
+          jobs.push(
+            inflateRawBlock(buf.subarray(off, off + len)).then((data) => {
+              const expected = Math.min(header.blockSize, size - b * header.blockSize);
+              if (data.length !== expected) throw new Error(`idxz bad block ${b}`);
+              write(data, b * header.blockSize);
+            }),
+          );
+        }
+        await Promise.all(jobs);
+        loaded += buf.length;
+        post({ type: "loading", mode: "download", bytes: totalComp, loaded });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: DOWNLOAD_CONCURRENCY }, () => runner()),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function downloadWhole(
   url: string,
   size: number,
@@ -269,7 +355,10 @@ async function downloadWhole(
 
   const data = new Uint8Array(size);
   if (ranged) {
-    await fetchPieces(url, size, (part, off) => data.set(part, off));
+    const viaZ = await downloadViaSidecar(url, size, (part, off) =>
+      data.set(part, off),
+    );
+    if (!viaZ) await fetchPieces(url, size, (part, off) => data.set(part, off));
   } else {
     const resp = await fetchWithRetry(url);
     const buf = new Uint8Array(await resp.arrayBuffer());
@@ -358,16 +447,22 @@ async function openIndex(url: string): Promise<void> {
     );
   } else {
     // Default for big indexes: fetch only what queries touch, and remember
-    // those pieces across visits.
+    // those pieces across visits. A .idxz sidecar (if published next to the
+    // index) roughly halves the bytes on the wire.
     post({ type: "loading", bytes: probe.length, mode: "range" });
-    rangeSource = await HttpRangeSource.open(url, {
-      fetchFn: retryFetch,
-      chunkStore: new CacheChunkStore(url, RANGE_CHUNK_SIZE),
-      // Smaller chunks waste fewer bytes per touched trie node (~4KB spans);
-      // the prefetch parallelism hides the extra per-request latency.
-      chunkSize: RANGE_CHUNK_SIZE,
-      maxChunks: 4096,
-    });
+    rangeSource =
+      (await CompressedRangeSource.open(url, probe.length, {
+        fetchFn: retryFetch,
+        makeStore: (blockSize) => new CacheChunkStore(url + ".idxz", blockSize),
+      })) ??
+      (await HttpRangeSource.open(url, {
+        fetchFn: retryFetch,
+        chunkStore: new CacheChunkStore(url, RANGE_CHUNK_SIZE),
+        // Smaller chunks waste fewer bytes per touched trie node (~4KB
+        // spans); the prefetch parallelism hides the per-request latency.
+        chunkSize: RANGE_CHUNK_SIZE,
+        maxChunks: 4096,
+      }));
     // Prewarm the trie root region (the file tail) in the background: every
     // query starts there. Not awaited — the first search's own fetches
     // dedupe against it and win the bandwidth race.

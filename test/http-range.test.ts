@@ -4,9 +4,12 @@
 
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as zlib from "node:zlib";
 import { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HttpRangeSource, MemorySource } from "../src/byte-source.js";
+import { CompressedRangeSource } from "../src/compressed-source.js";
+import { IDXZ_BLOCK_SIZE, buildIdxzHeader, idxzNumBlocks } from "../src/idxz.js";
 import { IndexReader } from "../src/index-reader.js";
 import { SearchSession, SearchResult } from "../src/search-session.js";
 
@@ -16,21 +19,47 @@ const INDEX_PATH = new URL("../web/public/demo.index", import.meta.url)
 let server: http.Server;
 let baseUrl: string;
 const data = fs.readFileSync(INDEX_PATH);
+const sidecar = buildSidecar(data);
+
+function buildSidecar(index: Uint8Array): Uint8Array {
+  const numBlocks = idxzNumBlocks(index.length, IDXZ_BLOCK_SIZE);
+  const blocks: Buffer[] = [];
+  const offsets: number[] = [0];
+  for (let b = 0; b < numBlocks; ++b) {
+    const start = b * IDXZ_BLOCK_SIZE;
+    const packed = zlib.deflateRawSync(
+      index.subarray(start, Math.min(start + IDXZ_BLOCK_SIZE, index.length)),
+    );
+    blocks.push(packed);
+    offsets.push(offsets[b] + packed.length);
+  }
+  const table = Buffer.alloc((numBlocks + 1) * 8);
+  for (let i = 0; i <= numBlocks; ++i) {
+    table.writeUInt32LE(offsets[i] % 2 ** 32, i * 8);
+    table.writeUInt32LE(Math.floor(offsets[i] / 2 ** 32), i * 8 + 4);
+  }
+  return Buffer.concat([
+    buildIdxzHeader(IDXZ_BLOCK_SIZE, index.length),
+    table,
+    ...blocks,
+  ]);
+}
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
+    const body = req.url?.endsWith(".idxz") ? sidecar : data;
     const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
     if (range) {
       const start = parseInt(range[1], 10);
-      const end = Math.min(parseInt(range[2], 10), data.length - 1);
+      const end = Math.min(parseInt(range[2], 10), body.length - 1);
       res.writeHead(206, {
-        "content-range": `bytes ${start}-${end}/${data.length}`,
+        "content-range": `bytes ${start}-${end}/${body.length}`,
         "content-length": end - start + 1,
       });
-      res.end(data.subarray(start, end + 1));
+      res.end(body.subarray(start, end + 1));
     } else {
-      res.writeHead(200, { "content-length": data.length });
-      res.end(data);
+      res.writeHead(200, { "content-length": body.length });
+      res.end(body);
     }
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -80,6 +109,33 @@ describe("HttpRangeSource", () => {
     expect(rangeResults).toEqual(memResults);
     expect(source.requests).toBeGreaterThan(0);
   }, 60000);
+
+  it("compressed sidecar source matches memory search at ~half the bytes", async () => {
+    const memReader = await IndexReader.open(new MemorySource(data));
+    const source = await CompressedRangeSource.open(
+      `${baseUrl}/demo.index`,
+      data.length,
+    );
+    expect(source).not.toBeNull();
+    expect(source!.length).toBe(data.length);
+    const reader = await IndexReader.open(source!);
+    expect(reader.count()).toBe(memReader.count());
+
+    const memResults = await collect(memReader, "n[aeiou]tr[aeiou]m_tic", 200000);
+    const zResults = await collect(reader, "n[aeiou]tr[aeiou]m_tic", 200000, 6);
+    expect(zResults).toEqual(memResults);
+    // The whole point: compressed transfer should be well under the
+    // uncompressed volume for the same walk.
+    expect(source!.ratio).toBeLessThan(0.8);
+    expect(source!.bytesFetched).toBeLessThan(data.length);
+  }, 60000);
+
+  it("sidecar open returns null for a stale or missing sidecar", async () => {
+    // Wrong expected size => treated as stale.
+    expect(
+      await CompressedRangeSource.open(`${baseUrl}/demo.index`, data.length + 1),
+    ).toBeNull();
+  });
 
   it("fetches a bounded volume with a realistic cache", async () => {
     const source = await HttpRangeSource.open(`${baseUrl}/demo.index`);
