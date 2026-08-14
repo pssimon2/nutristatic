@@ -6,11 +6,19 @@
 
 import { ByteSource, ChunkStore, ViewHolder } from "./byte-source.js";
 import {
+  IDXZ_HEADER_SIZE,
   IdxzHeader,
   inflateRawBlock,
   parseIdxzHeader,
   parseIdxzTable,
 } from "./idxz.js";
+
+/** Persistence for the sidecar's header+table prefix across visits. */
+export interface TableStore {
+  get(): Promise<Uint8Array | undefined>;
+  /** Fire-and-forget; failures must be swallowed by the store. */
+  put(data: Uint8Array): void;
+}
 
 export interface CompressedRangeSourceOptions {
   maxBlocks?: number;
@@ -21,6 +29,8 @@ export interface CompressedRangeSourceOptions {
    * across different block sizes).
    */
   makeStore?: (blockSize: number) => ChunkStore | undefined;
+  /** Cache for the header+table prefix (skips its fetch on revisits). */
+  tableStore?: TableStore;
 }
 
 export class CompressedRangeSource implements ByteSource {
@@ -62,28 +72,46 @@ export class CompressedRangeSource implements ByteSource {
     const fetchFn = opts.fetchFn ?? fetch.bind(globalThis);
     const url = indexUrl + ".idxz";
     try {
-      const headResp = await fetchFn(url, {
-        headers: { Range: "bytes=0-19" },
-      });
-      if (!headResp.ok) return null;
-      const headBytes = new Uint8Array(await headResp.arrayBuffer());
-      if (headBytes.length < 20 && headResp.status === 206) return null;
-      const header = parseIdxzHeader(headBytes);
-      if (!header || header.uncompressedSize !== expectedSize) return null;
-
-      const tableEnd = 20 + (header.numBlocks + 1) * 8;
-      let tableBytes: Uint8Array;
-      if (headBytes.length >= tableEnd) {
-        tableBytes = headBytes.subarray(20, tableEnd);
-      } else {
-        const tableResp = await fetchFn(url, {
-          headers: { Range: `bytes=20-${tableEnd - 1}` },
-        });
-        if (!tableResp.ok) return null;
-        tableBytes = new Uint8Array(await tableResp.arrayBuffer());
-        if (tableBytes.length !== tableEnd - 20) return null;
+      // A cached header+table prefix skips all table traffic on revisits.
+      let prefix = await opts.tableStore?.get().catch(() => undefined);
+      let header = prefix ? parseIdxzHeader(prefix) : null;
+      if (
+        !header ||
+        header.uncompressedSize !== expectedSize ||
+        prefix!.length < header.dataStart
+      ) {
+        prefix = undefined;
+        header = null;
       }
-      const table = parseIdxzTable(tableBytes, header.numBlocks);
+
+      if (!prefix) {
+        // Optimistic first fetch: 64KB covers header+table for indexes up
+        // to roughly 2GB, making the open a single round trip.
+        const first = await fetchFn(url, { headers: { Range: "bytes=0-65535" } });
+        if (!first.ok) return null;
+        let buf = new Uint8Array(await first.arrayBuffer());
+        header = parseIdxzHeader(buf);
+        if (!header || header.uncompressedSize !== expectedSize) return null;
+        if (buf.length < header.dataStart) {
+          const rest = await fetchFn(url, {
+            headers: { Range: `bytes=${buf.length}-${header.dataStart - 1}` },
+          });
+          if (!rest.ok) return null;
+          const more = new Uint8Array(await rest.arrayBuffer());
+          const joined = new Uint8Array(header.dataStart);
+          joined.set(buf);
+          joined.set(more, buf.length);
+          buf = joined;
+        }
+        prefix = buf.subarray(0, header.dataStart);
+        opts.tableStore?.put(prefix.slice());
+      }
+      if (!header || !prefix) return null;
+
+      const table = await parseIdxzTable(
+        prefix.subarray(IDXZ_HEADER_SIZE, header.dataStart),
+        header.numBlocks,
+      );
       if (!table) return null;
 
       return new CompressedRangeSource(

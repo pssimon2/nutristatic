@@ -270,16 +270,23 @@ async function downloadViaSidecar(
   const sidecarUrl = url + ".idxz";
   try {
     const headResp = await fetchWithRetry(sidecarUrl, {
-      headers: { Range: "bytes=0-19" },
+      headers: { Range: "bytes=0-65535" },
     });
-    const header = parseIdxzHeader(new Uint8Array(await headResp.arrayBuffer()));
+    let buf = new Uint8Array(await headResp.arrayBuffer());
+    const header = parseIdxzHeader(buf);
     if (!header || header.uncompressedSize !== size) return false;
-    const tableEnd = 20 + (header.numBlocks + 1) * 8;
-    const tableResp = await fetchWithRetry(sidecarUrl, {
-      headers: { Range: `bytes=20-${tableEnd - 1}` },
-    });
-    const table = parseIdxzTable(
-      new Uint8Array(await tableResp.arrayBuffer()),
+    if (buf.length < header.dataStart) {
+      const rest = await fetchWithRetry(sidecarUrl, {
+        headers: { Range: `bytes=${buf.length}-${header.dataStart - 1}` },
+      });
+      const more = new Uint8Array(await rest.arrayBuffer());
+      const joined = new Uint8Array(header.dataStart);
+      joined.set(buf);
+      joined.set(more, buf.length);
+      buf = joined;
+    }
+    const table = await parseIdxzTable(
+      buf.subarray(24, header.dataStart),
       header.numBlocks,
     );
     if (!table) return false;
@@ -454,6 +461,18 @@ async function openIndex(url: string): Promise<void> {
       (await CompressedRangeSource.open(url, probe.length, {
         fetchFn: retryFetch,
         makeStore: (blockSize) => new CacheChunkStore(url + ".idxz", blockSize),
+        tableStore: {
+          get: async () => {
+            const cache = await openCache(CHUNK_CACHE_NAME);
+            const hit = cache && (await cache.match(`${url}?nutrimatic-idxz-table`));
+            return hit ? new Uint8Array(await hit.arrayBuffer()) : undefined;
+          },
+          put: (data) => {
+            void openCache(CHUNK_CACHE_NAME)
+              .then((c) => c?.put(`${url}?nutrimatic-idxz-table`, new Response(data as BodyInit)))
+              .catch(() => {});
+          },
+        },
       })) ??
       (await HttpRangeSource.open(url, {
         fetchFn: retryFetch,

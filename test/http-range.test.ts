@@ -4,12 +4,11 @@
 
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as zlib from "node:zlib";
 import { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HttpRangeSource, MemorySource } from "../src/byte-source.js";
 import { CompressedRangeSource } from "../src/compressed-source.js";
-import { IDXZ_BLOCK_SIZE, buildIdxzHeader, idxzNumBlocks } from "../src/idxz.js";
+import { buildIdxz } from "../src/idxz-build.js";
 import { IndexReader } from "../src/index-reader.js";
 import { SearchSession, SearchResult } from "../src/search-session.js";
 
@@ -19,31 +18,7 @@ const INDEX_PATH = new URL("../web/public/demo.index", import.meta.url)
 let server: http.Server;
 let baseUrl: string;
 const data = fs.readFileSync(INDEX_PATH);
-const sidecar = buildSidecar(data);
-
-function buildSidecar(index: Uint8Array): Uint8Array {
-  const numBlocks = idxzNumBlocks(index.length, IDXZ_BLOCK_SIZE);
-  const blocks: Buffer[] = [];
-  const offsets: number[] = [0];
-  for (let b = 0; b < numBlocks; ++b) {
-    const start = b * IDXZ_BLOCK_SIZE;
-    const packed = zlib.deflateRawSync(
-      index.subarray(start, Math.min(start + IDXZ_BLOCK_SIZE, index.length)),
-    );
-    blocks.push(packed);
-    offsets.push(offsets[b] + packed.length);
-  }
-  const table = Buffer.alloc((numBlocks + 1) * 8);
-  for (let i = 0; i <= numBlocks; ++i) {
-    table.writeUInt32LE(offsets[i] % 2 ** 32, i * 8);
-    table.writeUInt32LE(Math.floor(offsets[i] / 2 ** 32), i * 8 + 4);
-  }
-  return Buffer.concat([
-    buildIdxzHeader(IDXZ_BLOCK_SIZE, index.length),
-    table,
-    ...blocks,
-  ]);
-}
+const sidecar = buildIdxz(data);
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
