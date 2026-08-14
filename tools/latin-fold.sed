@@ -107,3 +107,22 @@ s/ĵ/j/g
 s/ĥ/h/g
 s/ŵ/w/g
 s/ŷ/y/g
+# Non-NFD-decomposable letters (Polish/Turkish/Nordic/Romanian).
+s/ł/l/g
+s/Ł/l/g
+s/ı/i/g
+s/İ/i/g
+s/ď/d/g
+s/Ď/d/g
+s/ň/n/g
+s/Ň/n/g
+s/ľ/l/g
+s/ĺ/l/g
+s/đ/d/g
+s/Đ/d/g
+s/ø/o/g
+s/Ø/o/g
+s/ț/t/g
+s/Ț/t/g
+s/ș/s/g
+s/Ș/s/g

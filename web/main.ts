@@ -158,6 +158,10 @@ function transliterate(query: string): string {
     .replace(/[œŒ]/g, "oe")
     .replace(/[æÆ]/g, "ae")
     .replace(/[ßẞ]/g, "ss")
+    .replace(/[łŁ]/g, "l") // these four don't decompose under NFD
+    .replace(/[ıİ]/g, "i")
+    .replace(/[đĐ]/g, "d")
+    .replace(/[øØ]/g, "o")
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "");
 }
