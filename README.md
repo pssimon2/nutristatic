@@ -83,6 +83,27 @@ find text -type f | xargs cat | npm run make-index -- wikipedia
 npm run merge-indexes -- 5 wikipedia.*.index wiki-merged.index
 ```
 
+## Measured performance (2026-08-14 baseline)
+
+Production, cold browser context, first result on screen:
+
+| Index | Query | Cold first result |
+|---|---|---|
+| English Wikipedia (1.3 GB, range mode) | `solar s_stem` | 0.4 s |
+| German Wikipedia (591 MB, range mode) | `brandenburger A+` | 0.4 s |
+| Simple English (41 MB, range mode) | `solar s_stem` | 0.3 s |
+| web words (20 MB, range mode) | `n[aeiou]tr[aeiou]m_tic` | 0.7 s |
+
+Heavy anagram (`<aciimnrttu>`, English index): ~5 s cold range mode,
+~2 s from a device-stored (OPFS) copy including page load, 0.1 s warm
+revisit. Engine: 1.4–3.4M steps/s in-memory; a 500k-step, 100k-result
+search costs ~7 MB of heap. Whole-index download: 1.3 GB transferred as
+785 MB compressed in ~30 s on fast links. Compressed range transport
+(`.idxz` sidecars) cuts per-query transfer 31–39%.
+
+Regenerate: `node scripts/bench-all.mjs` (engine + fixtures) and
+`node scripts/prod-matrix.mjs` (live site).
+
 ## Server caching headers
 
 The Caddy site block sets `Cache-Control` explicitly: Vite's content-hashed
