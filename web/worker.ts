@@ -17,8 +17,10 @@ import { SearchSession } from "../src/search-session.js";
 // already in the browser cache. The user can explicitly download the whole
 // index ("download-full") for offline/faster searching.
 const TINY_LIMIT = 4 * 1024 * 1024;
-// Absolute ceiling for whole-index downloads (servers without Range support).
-const FULL_DOWNLOAD_LIMIT = 256 * 1024 * 1024;
+// Absolute ceiling for whole-index downloads: covers the 1.3GB Wikipedia
+// index — a one-time download into the browser cache buys memory-speed
+// searches (the heavy-anagram case drops from ~30s to under a second).
+const FULL_DOWNLOAD_LIMIT = 2 * 1024 * 1024 * 1024;
 // Full downloads happen in ranged pieces with per-piece retry, so a flaky
 // (especially mobile) connection doesn't restart the whole transfer.
 const DOWNLOAD_PIECE = 4 * 1024 * 1024;
@@ -32,7 +34,9 @@ const RANGE_CHUNK_SIZE = 1 << 15;
 // deliberately small and non-blocking: on slow links upfront bytes delay the
 // first result, which is the metric that matters.
 const PREWARM_BYTES = 128 * 1024;
-const PREFETCH_DEPTH = 16;
+// Broad searches (anagrams especially) have wide frontiers: deep speculative
+// prefetch turns serial fetch stalls into parallel transfers.
+const PREFETCH_DEPTH = 48;
 
 interface OpenMsg {
   type: "open";
@@ -211,7 +215,9 @@ async function openIndex(url: string): Promise<void> {
   }
 
   if (probe.length <= TINY_LIMIT || !probe.supportsRanges) {
-    if (probe.length > FULL_DOWNLOAD_LIMIT) {
+    // Automatic downloads stay small; only the explicit "download whole
+    // index" button may pull gigabytes.
+    if (probe.length > 256 * 1024 * 1024) {
       throw new Error(
         `index is ${Math.round(probe.length / 1048576)} MB and its server ` +
           `does not support Range requests`,

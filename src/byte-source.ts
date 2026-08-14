@@ -24,6 +24,12 @@ export interface ByteSource {
    * not contiguous in memory (caller falls back to byte()).
    */
   view(start: number, end: number, out: ViewHolder): boolean;
+  /**
+   * Optional hint that [start, end) will likely be read soon. Unlike
+   * ensure(), the source may drop the hint (e.g. to protect a slow link
+   * from speculative traffic).
+   */
+  prefetchHint?(start: number, end: number): void;
 }
 
 /** Await only if needed, keeping the common cached case synchronous. */
@@ -77,6 +83,14 @@ export class HttpRangeSource implements ByteSource {
   private readonly inflight = new Map<number, Promise<void>>();
   bytesFetched = 0;
   requests = 0;
+  // Live estimates of link bandwidth (bytes/s) and round-trip time (s),
+  // driving the read-ahead size (bandwidth-delay product): the index is
+  // written post-order, so a node's descendants lie contiguously BEFORE it —
+  // extending a miss-fetch backwards preloads the subtree the search is
+  // about to walk. On fast links that collapses serial per-level round
+  // trips; on slow links the product (and the read-ahead) is naturally tiny.
+  private ewmaBw = 1e6;
+  private ewmaRtt = 0.08;
   /** Whether the probe confirmed the server honors Range requests. */
   supportsRanges = false;
 
@@ -174,13 +188,29 @@ export class HttpRangeSource implements ByteSource {
       }
     }
     if (still.length > 0) {
-      await this.fetchChunks(still[0], still[still.length - 1]);
+      // Read-ahead: extend the fetch backwards over uncached chunks, up to
+      // the current bandwidth-delay product.
+      const maxExtra = Math.min(
+        32,
+        Math.floor((this.ewmaBw * this.ewmaRtt) / this.chunkSize),
+      );
+      let first = still[0];
+      while (
+        first > 0 &&
+        still[0] - first < maxExtra &&
+        !this.cache.has(first - 1) &&
+        !this.inflight.has(first - 1)
+      ) {
+        --first;
+      }
+      await this.fetchChunks(first, still[still.length - 1]);
     }
   }
 
   private async fetchChunks(firstChunk: number, lastChunk: number): Promise<void> {
     const start = firstChunk * this.chunkSize;
     const end = Math.min((lastChunk + 1) * this.chunkSize, this.length) - 1;
+    const t0 = Date.now();
     const resp = await this.fetchFn(this.url, {
       headers: { Range: `bytes=${start}-${end}` },
     });
@@ -188,6 +218,13 @@ export class HttpRangeSource implements ByteSource {
       throw new Error(`range fetch failed for ${this.url}: HTTP ${resp.status}`);
     }
     const buf = new Uint8Array(await resp.arrayBuffer());
+    // Update the link estimates (fetches overlap, so these are effective
+    // per-stream values — exactly what the read-ahead sizing wants).
+    const dt = Math.max(0.001, (Date.now() - t0) / 1000);
+    const rttSample = Math.max(0.005, dt - buf.length / this.ewmaBw);
+    this.ewmaRtt = 0.8 * this.ewmaRtt + 0.2 * rttSample;
+    const bwSample = buf.length / Math.max(0.005, dt - this.ewmaRtt);
+    this.ewmaBw = 0.8 * this.ewmaBw + 0.2 * Math.min(bwSample, 5e8);
     if (resp.status !== 206 && buf.length !== end - start + 1) {
       throw new Error(`server at ${this.url} does not support Range requests`);
     }
@@ -226,5 +263,20 @@ export class HttpRangeSource implements ByteSource {
     out.bytes = chunk;
     out.base = c * this.chunkSize;
     return true;
+  }
+
+  /**
+   * Speculative load, dropped when the link is already busy relative to its
+   * bandwidth-delay product — speculation must never starve the critical
+   * path on a slow connection.
+   */
+  prefetchHint(start: number, end: number): void {
+    const budget = Math.max(
+      1,
+      Math.floor((this.ewmaBw * this.ewmaRtt) / this.chunkSize),
+    );
+    if (this.inflight.size >= budget) return;
+    const r = this.ensure(start, end);
+    if (r) r.catch(() => {});
   }
 }

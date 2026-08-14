@@ -136,14 +136,18 @@ export class IndexReader {
   }
 
   /**
-   * Hint that `node` will likely be read soon: starts fetching its bytes in
-   * the background. No-op for synchronous sources; fetch errors are ignored
-   * (the real read retries and reports them).
+   * Hint that `node` will likely be read soon. The source may drop the hint
+   * to protect a busy or slow link; errors surface on the real read.
    */
   prefetch(node: number): void {
     if (node === NO_NODE) return;
-    const r = this.source.ensure(Math.max(0, node - MAX_NODE_SPAN), node);
-    if (r) r.catch(() => {});
+    const start = Math.max(0, node - MAX_NODE_SPAN);
+    if (this.source.prefetchHint) {
+      this.source.prefetchHint(start, node);
+    } else {
+      const r = this.source.ensure(start, node);
+      if (r) r.catch(() => {});
+    }
   }
 
   // Reused across calls: the view holder and the cross-boundary scratch copy.
