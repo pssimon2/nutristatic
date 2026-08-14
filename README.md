@@ -83,6 +83,15 @@ find text -type f | xargs cat | npm run make-index -- wikipedia
 npm run merge-indexes -- 5 wikipedia.*.index wiki-merged.index
 ```
 
+## Server caching headers
+
+The Caddy site block sets `Cache-Control` explicitly: Vite's content-hashed
+`/assets/*` are `public, max-age=31536000, immutable` (no revalidation
+round trips, ever — a new deploy changes the hash), the HTML shell is
+`no-cache` (revalidates so deploys appear immediately), and small statics get
+a day. Index/sidecar files intentionally get none: range responses are
+managed by the app's own Cache Storage layer.
+
 ## Deploying with a big index
 
 Indexes up to 64 MB are downloaded into memory. Above that the app switches
