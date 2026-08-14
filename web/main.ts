@@ -325,5 +325,28 @@ window.addEventListener("popstate", () => {
   applyQuery((p.get("q") || "").trim());
 });
 
-worker.postMessage({ type: "open", url: indexUrl });
+async function postOpen(): Promise<void> {
+  // Hand the worker whatever the inline <head> script already fetched
+  // (probe + sidecar table): saves several round trips on cold loads.
+  const early = (window as any).__earlyIndex;
+  (window as any).__earlyIndex = null; // consume once
+  if (early && early.url === indexUrl) {
+    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 3000));
+    const settled = await Promise.race([
+      Promise.all([early.probe, early.table]),
+      timeout,
+    ]);
+    if (settled) {
+      const [probe, table] = settled as [unknown, ArrayBuffer | null];
+      worker.postMessage(
+        { type: "open", url: indexUrl, early: { probe, table } },
+        table ? [table] : [],
+      );
+      return;
+    }
+  }
+  worker.postMessage({ type: "open", url: indexUrl });
+}
+
+void postOpen();
 applyQuery((params.get("q") || "").trim());

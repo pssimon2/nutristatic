@@ -143,6 +143,8 @@ export interface HttpRangeSourceOptions {
   maxChunks?: number;
   fetchFn?: typeof fetch;
   chunkStore?: ChunkStore;
+  /** Probe results already known (skips the 1-byte probe request). */
+  known?: { length: number; supportsRanges: boolean };
 }
 
 /**
@@ -182,6 +184,18 @@ export class HttpRangeSource implements ByteSource {
     opts: HttpRangeSourceOptions = {},
   ): Promise<HttpRangeSource> {
     const fetchFn = opts.fetchFn ?? fetch.bind(globalThis);
+    if (opts.known) {
+      const source = new HttpRangeSource(
+        url,
+        opts.known.length,
+        opts.chunkSize ?? 1 << 16,
+        opts.maxChunks ?? 1024,
+        fetchFn,
+        opts.chunkStore,
+      );
+      source.supportsRanges = opts.known.supportsRanges;
+      return source;
+    }
     // Probe with a 1-byte range GET: works on static hosts that disallow
     // HEAD, and verifies Range support in one round trip.
     const probe = await fetchFn(url, { headers: { Range: "bytes=0-0" } });

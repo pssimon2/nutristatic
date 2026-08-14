@@ -31,6 +31,11 @@ export interface CompressedRangeSourceOptions {
   makeStore?: (blockSize: number) => ChunkStore | undefined;
   /** Cache for the header+table prefix (skips its fetch on revisits). */
   tableStore?: TableStore;
+  /**
+   * Sidecar prefix bytes fetched ahead of time (e.g. by the page before the
+   * worker booted). Validated like any other source; ignored when invalid.
+   */
+  prefixBytes?: Uint8Array;
 }
 
 export class CompressedRangeSource implements ByteSource {
@@ -84,26 +89,47 @@ export class CompressedRangeSource implements ByteSource {
         header = null;
       }
 
+      // Fetch the remainder when a first chunk didn't cover the table.
+      const complete = async (
+        buf: Uint8Array,
+        h: IdxzHeader,
+      ): Promise<Uint8Array | null> => {
+        if (buf.length >= h.dataStart) return buf.subarray(0, h.dataStart);
+        const rest = await fetchFn(url, {
+          headers: { Range: `bytes=${buf.length}-${h.dataStart - 1}` },
+        });
+        if (!rest.ok) return null;
+        const more = new Uint8Array(await rest.arrayBuffer());
+        const joined = new Uint8Array(h.dataStart);
+        joined.set(buf);
+        joined.set(more, buf.length);
+        return joined;
+      };
+
+      // Prefix bytes handed in by an early page-side fetch.
+      if (!prefix && opts.prefixBytes) {
+        const h = parseIdxzHeader(opts.prefixBytes);
+        if (h && h.uncompressedSize === expectedSize) {
+          const full = await complete(opts.prefixBytes, h);
+          if (full) {
+            header = h;
+            prefix = full;
+            opts.tableStore?.put(prefix.slice());
+          }
+        }
+      }
+
       if (!prefix) {
         // Optimistic first fetch: 64KB covers header+table for indexes up
         // to roughly 2GB, making the open a single round trip.
         const first = await fetchFn(url, { headers: { Range: "bytes=0-65535" } });
         if (!first.ok) return null;
-        let buf = new Uint8Array(await first.arrayBuffer());
+        const buf = new Uint8Array(await first.arrayBuffer());
         header = parseIdxzHeader(buf);
         if (!header || header.uncompressedSize !== expectedSize) return null;
-        if (buf.length < header.dataStart) {
-          const rest = await fetchFn(url, {
-            headers: { Range: `bytes=${buf.length}-${header.dataStart - 1}` },
-          });
-          if (!rest.ok) return null;
-          const more = new Uint8Array(await rest.arrayBuffer());
-          const joined = new Uint8Array(header.dataStart);
-          joined.set(buf);
-          joined.set(more, buf.length);
-          buf = joined;
-        }
-        prefix = buf.subarray(0, header.dataStart);
+        const full = await complete(buf, header);
+        if (!full) return null;
+        prefix = full;
         opts.tableStore?.put(prefix.slice());
       }
       if (!header || !prefix) return null;

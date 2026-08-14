@@ -79,9 +79,20 @@ const PREWARM_BYTES = 128 * 1024;
 // prefetch turns serial fetch stalls into parallel transfers.
 const PREFETCH_DEPTH = 48;
 
+interface EarlyProbe {
+  ok: boolean;
+  status: number;
+  contentRange: string | null;
+  contentLength: string | null;
+}
+
 interface OpenMsg {
   type: "open";
   url: string;
+  early?: {
+    probe: EarlyProbe | null;
+    table: ArrayBuffer | null;
+  };
 }
 interface SearchMsg {
   type: "search";
@@ -401,14 +412,33 @@ async function useMemory(data: Uint8Array, cached: boolean): Promise<void> {
   });
 }
 
-async function openIndex(url: string): Promise<void> {
+/** Interpret an early page-side probe response (same logic as the source). */
+function parseEarlyProbe(
+  probe: EarlyProbe,
+): { length: number; supportsRanges: boolean } | null {
+  if (!probe.ok) return null;
+  if (probe.status === 206 && probe.contentRange) {
+    const m = /\/(\d+)\s*$/.exec(probe.contentRange);
+    if (m) return { length: parseInt(m[1], 10), supportsRanges: true };
+  }
+  if (probe.contentLength) {
+    return { length: parseInt(probe.contentLength, 10), supportsRanges: false };
+  }
+  return null;
+}
+
+async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   reader = null;
   rangeSource = null;
   diskSource?.close(); // release the OPFS lock before (re)opening anything
   diskSource = null;
   session = null;
   currentUrl = url;
-  const probe = await HttpRangeSource.open(url, { fetchFn: retryFetch });
+  let probe = early?.probe ? parseEarlyProbe(early.probe) : null;
+  if (!probe) {
+    const p = await HttpRangeSource.open(url, { fetchFn: retryFetch });
+    probe = { length: p.length, supportsRanges: p.supportsRanges };
+  }
   currentSize = probe.length;
 
   // An OPFS copy opens instantly: sync disk reads, no RAM load.
@@ -460,6 +490,7 @@ async function openIndex(url: string): Promise<void> {
     rangeSource =
       (await CompressedRangeSource.open(url, probe.length, {
         fetchFn: retryFetch,
+        prefixBytes: early?.table ? new Uint8Array(early.table) : undefined,
         makeStore: (blockSize) => new CacheChunkStore(url + ".idxz", blockSize),
         tableStore: {
           get: async () => {
@@ -476,6 +507,7 @@ async function openIndex(url: string): Promise<void> {
       })) ??
       (await HttpRangeSource.open(url, {
         fetchFn: retryFetch,
+        known: probe,
         chunkStore: new CacheChunkStore(url, RANGE_CHUNK_SIZE),
         // Smaller chunks waste fewer bytes per touched trie node (~4KB
         // spans); the prefetch parallelism hides the per-request latency.
@@ -568,7 +600,7 @@ onmessage = async (ev: MessageEvent<InMsg>) => {
     switch (msg.type) {
       case "open":
         ++runToken;
-        await openIndex(msg.url);
+        await openIndex(msg.url, msg.early);
         break;
       case "search": {
         if (!reader) throw new Error("no index loaded");

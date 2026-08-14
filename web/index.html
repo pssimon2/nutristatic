@@ -3,6 +3,39 @@
 <head>
   <meta charset="utf-8">
   <title>Nutristatic</title>
+  <script>
+    // Start the index probe (and, when not already cached, the sidecar
+    // header+table fetch) the moment HTML arrives — several round trips
+    // before the app and worker have even booted. The worker consumes these
+    // via postMessage instead of refetching.
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var url = new URL(params.get("index") || "./en-wiki.index", location.href).href;
+      window.__earlyIndex = {
+        url: url,
+        probe: fetch(url, { headers: { Range: "bytes=0-0" } })
+          .then(function (r) {
+            return {
+              ok: r.ok,
+              status: r.status,
+              contentRange: r.headers.get("content-range"),
+              contentLength: r.headers.get("content-length"),
+            };
+          })
+          .catch(function () { return null; }),
+        table: (async function () {
+          try {
+            var cache = await caches.open("nutrimatic-chunks-v2");
+            if (await cache.match(url + "?nutrimatic-idxz-table")) return null;
+          } catch (e) { /* no cache API: fetch anyway */ }
+          try {
+            var r = await fetch(url + ".idxz", { headers: { Range: "bytes=0-131071" } });
+            return r.ok ? await r.arrayBuffer() : null;
+          } catch (e) { return null; }
+        })(),
+      };
+    })();
+  </script>
   <link rel="icon" type="image/vnd.microsoft.icon" href="./favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
