@@ -57,6 +57,80 @@ export class MemorySource implements ByteSource {
   }
 }
 
+/** The synchronous read surface of a FileSystemSyncAccessHandle. */
+export interface SyncFileReader {
+  read(buffer: Uint8Array, options: { at: number }): number;
+  close?(): void;
+}
+
+/**
+ * Index stored in a local file with synchronous random reads (browser OPFS
+ * sync access handles in a worker, or any equivalent). Chunks are read on
+ * demand into a small LRU — a multi-GB downloaded index opens instantly and
+ * searches at near-memory speed without ever being loaded whole into RAM.
+ * All operations are synchronous, so the search loop never awaits.
+ */
+export class SyncFileSource implements ByteSource {
+  private readonly cache = new Map<number, Uint8Array>();
+
+  constructor(
+    private readonly file: SyncFileReader,
+    readonly length: number,
+    private readonly chunkSize = 1 << 17,
+    private readonly maxChunks = 512,
+  ) {}
+
+  private chunk(c: number): Uint8Array {
+    let data = this.cache.get(c);
+    if (data) {
+      this.cache.delete(c);
+      this.cache.set(c, data);
+      return data;
+    }
+    const start = c * this.chunkSize;
+    const size = Math.min(this.chunkSize, this.length - start);
+    data = new Uint8Array(size);
+    let got = 0;
+    while (got < size) {
+      const n = this.file.read(data.subarray(got), { at: start + got });
+      if (n <= 0) throw new Error(`short read at ${start + got}`);
+      got += n;
+    }
+    this.cache.set(c, data);
+    if (this.cache.size > this.maxChunks) {
+      this.cache.delete(this.cache.keys().next().value!);
+    }
+    return data;
+  }
+
+  ensure(start: number, end: number): void {
+    const first = Math.floor(start / this.chunkSize);
+    const last = Math.floor((end - 1) / this.chunkSize);
+    for (let c = first; c <= last; ++c) this.chunk(c);
+  }
+
+  byte(pos: number): number {
+    return this.chunk(Math.floor(pos / this.chunkSize))[pos % this.chunkSize];
+  }
+
+  view(start: number, end: number, out: ViewHolder): boolean {
+    const c = Math.floor(start / this.chunkSize);
+    if (c !== Math.floor((end - 1) / this.chunkSize)) return false;
+    out.bytes = this.chunk(c);
+    out.base = c * this.chunkSize;
+    return true;
+  }
+
+  /** Release the underlying file handle (its lock blocks other openers). */
+  close(): void {
+    try {
+      this.file.close?.();
+    } catch {
+      // already closed
+    }
+  }
+}
+
 /** Optional persistent store for fetched chunks (e.g. browser Cache API). */
 export interface ChunkStore {
   get(chunk: number): Promise<Uint8Array | undefined>;

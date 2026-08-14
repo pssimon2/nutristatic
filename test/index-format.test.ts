@@ -85,3 +85,33 @@ describe("corpus windowing", () => {
     for (const w of out) expect(w.startsWith(" ")).toBe(false);
   });
 });
+
+describe("SyncFileSource", () => {
+  it("searches identically to MemorySource via chunked sync reads", async () => {
+    const entries: Array<[string, number]> = Array.from(
+      { length: 500 },
+      (_, i): [string, number] => [`word${String(i).padStart(3, "0")} `, i + 1],
+    );
+    const sink = new BufferSink();
+    writeEntries(new IndexWriter(sink), entries.slice());
+    const bytes = sink.bytes();
+
+    const { SyncFileSource } = await import("../src/byte-source.js");
+    let reads = 0;
+    const fakeFile = {
+      read(buffer: Uint8Array, opts: { at: number }): number {
+        ++reads;
+        const n = Math.min(buffer.length, bytes.length - opts.at, 777); // force partial reads
+        buffer.set(bytes.subarray(opts.at, opts.at + n));
+        return n;
+      },
+    };
+    // Tiny chunks + tiny LRU to force chunk-boundary and eviction paths.
+    const source = new SyncFileSource(fakeFile, bytes.length, 256, 4);
+    const reader = await IndexReader.open(source);
+    const memReader = await IndexReader.open(new MemorySource(bytes));
+    expect(reader.count()).toBe(memReader.count());
+    expect(await dumpAll(reader)).toEqual(await dumpAll(memReader));
+    expect(reads).toBeGreaterThan(0);
+  });
+});

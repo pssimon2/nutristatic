@@ -203,8 +203,11 @@ worker.onmessage = (ev) => {
       break;
     case "ready":
       indexReady = true;
-      indexMode = msg.mode;
-      if (msg.mode === "memory") {
+      indexMode = msg.mode === "range" ? "range" : "memory";
+      if (msg.mode === "disk") {
+        indexInfo.textContent = `${fmtMB(msg.bytes)} on device storage`;
+        dlFull.hidden = true;
+      } else if (msg.mode === "memory") {
         indexInfo.textContent = `${fmtMB(msg.bytes)} in memory${msg.cached ? " (from cache)" : ""}`;
         dlFull.hidden = true;
       } else {
