@@ -11,6 +11,7 @@ const PER_RUN_RESULTS = 1000;
 const BUNDLED_INDEXES: Array<[string, string]> = [
   ["./en-wiki.index", "English Wikipedia (1.3 GB)"],
   ["./de-wiki.index", "German Wikipedia (Deutsch)"],
+  ["./it-wiki.index", "Italian Wikipedia (Italiano)"],
   ["./simple-wiki.index", "Simple English Wikipedia (43 MB)"],
   ["./demo.index", "web words + bigrams (20 MB)"],
 ];
