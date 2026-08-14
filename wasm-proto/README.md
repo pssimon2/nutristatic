@@ -43,4 +43,25 @@ priority-queue behavior); the score sequences match exactly.
   performance becomes a complaint (phones would see the largest relative
   win, and disk-mode OPFS reads are synchronous - WASM's happy path).
 
-Build: see the comment atop kernel.c. Run: `npx tsx wasm-proto/bench-wasm.mjs`.
+## Kernel v2: the full port
+
+`kernel2.c` ports the ENTIRE engine — lazy subset construction per conjunct
+NFA, lazy product filter, tuple/subset interning via open-addressed hashes —
+so the heavy anagram queries run fully in WASM. Measured on the German index
+(in memory, 1M-step budget):
+
+| Query | JS | WASM v2 | Speedup | Parity |
+|---|---|---|---|---|
+| `<aeeimnrsttu>` | 1788ms | 1391ms | **1.29x** | identical (incl. step count) |
+| `<aciimnrttu>` | 780ms | 650ms | 1.20x | score-stream identical |
+| `brandenburger A+` | 2ms | 2ms | ~1x | identical |
+
+The full engine wins only 1.2-1.3x on the queries that matter (v1's 2.7x was
+the dense-DFA fast path on already-fast patterns). The JS engine's typed-array
+hot loop is simply near-native for this workload; the kernel also lacks the
+parse cache, so a fully-invested port might reach ~1.5x. Conclusion
+unchanged, now with data instead of estimates: not worth a second engine for
+<=30-50% on searches that already run in 0.4s end-to-end from device storage.
+
+Build/run: comments atop kernel2.c; `npx tsx wasm-proto/bench-wasm2.mjs`.
+

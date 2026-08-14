@@ -1,0 +1,544 @@
+// WASM kernel v2: the FULL engine — best-first walk plus the lazy filter
+// machinery (on-demand subset construction per conjunct NFA, lazy product
+// of conjuncts). This is what lets anagram/intersection queries run in the
+// kernel, which v1's dense-DFA requirement excluded.
+//
+// Build: clang --target=wasm32-unknown-unknown -O3 -nostdlib \
+//   -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined \
+//   -Wl,--initial-memory=17039360 -Wl,--max-memory=3221225472 \
+//   -o kernel2.wasm kernel2.c
+
+typedef unsigned char u8;
+typedef unsigned int u32;
+typedef int i32;
+typedef double f64;
+
+#define NSYM 37
+#define NO_NODE 0xFFFFFFFFu
+#define UNCOMPUTED -2
+#define DEAD -1
+#define MAX_CONJ 32
+
+extern u8 __heap_base;
+static u32 heap_top = 0;
+
+__attribute__((export_name("walloc"))) u32 walloc(u32 n) {
+  if (heap_top == 0) heap_top = (u32)&__heap_base;
+  u32 p = (heap_top + 15) & ~15u;
+  heap_top = p + n;
+  return p;
+}
+
+// ---- index + alphabet ----
+static u8 *idx;
+static u32 idx_len, root;
+static i32 sym_of[256];
+static u8 alphabet[NSYM];
+static f64 total, restart;
+static u8 *io;
+
+// ---- lazy sub-filter (subset construction over one NFA) ----
+typedef struct {
+  // NFA (CSR arcs)
+  u32 n_nfa, start;
+  u32 *arc_start; // n_nfa+1
+  u8 *arc_label;  // 0 = epsilon
+  u32 *arc_to;
+  u8 *nfa_final; // bitmap-ish bytes
+  // lazy DFA
+  u32 n_dfa, dfa_cap;
+  i32 *trans; // dfa_cap*NSYM
+  u8 *acc;
+  u32 *set_start; // dfa_cap+1 (CSR into set_pool)
+  u32 *set_pool;
+  u32 pool_len, pool_cap;
+  // subset intern
+  u32 *slot; // -> dfa_id+1
+  u32 slot_mask;
+  // scratch bitmap for closures
+  u32 *mark; // n_nfa bits
+} Sub;
+
+static Sub subs[MAX_CONJ];
+static u32 n_subs = 0;
+
+static u32 hash_ints(u32 *a, u32 n) {
+  u32 h = 0x9e3779b9u;
+  for (u32 i = 0; i < n; ++i) {
+    h = (h ^ a[i]) * 0x85ebca6bu;
+    h ^= h >> 13;
+  }
+  return h;
+}
+
+// Collect epsilon-closure of marked seeds (mark bitmap pre-set) into sorted
+// member list appended to the sub's pool. Returns member count.
+static u32 close_and_collect(Sub *s, u32 *stack, u32 stack_n) {
+  while (stack_n > 0) {
+    u32 q = stack[--stack_n];
+    for (u32 a = s->arc_start[q]; a < s->arc_start[q + 1]; ++a) {
+      if (s->arc_label[a] == 0) {
+        u32 t = s->arc_to[a];
+        if (!(s->mark[t >> 5] & (1u << (t & 31)))) {
+          s->mark[t >> 5] |= 1u << (t & 31);
+          stack[stack_n++] = t;
+        }
+      }
+    }
+  }
+  // scan bitmap ascending -> sorted members
+  u32 count = 0;
+  for (u32 w = 0; w < (s->n_nfa + 31) / 32; ++w) {
+    u32 bits = s->mark[w];
+    while (bits) {
+      u32 b = __builtin_ctz(bits);
+      bits &= bits - 1;
+      s->set_pool[s->pool_len + count] = w * 32 + b;
+      ++count;
+    }
+  }
+  return count;
+}
+
+static u32 scratch_stack[65536];
+
+// Intern the member list sitting at pool_len..pool_len+count; returns dfa id
+// or 0xFFFFFFFF on capacity overflow.
+static u32 sub_intern(Sub *s, u32 count) {
+  u32 *members = s->set_pool + s->pool_len;
+  u32 h = hash_ints(members, count) & s->slot_mask;
+  for (;;) {
+    u32 v = s->slot[h];
+    if (v == 0) break;
+    u32 id = v - 1;
+    u32 st = s->set_start[id], en = s->set_start[id + 1];
+    if (en - st == count) {
+      u32 same = 1;
+      for (u32 i = 0; i < count; ++i) {
+        if (s->set_pool[st + i] != members[i]) {
+          same = 0;
+          break;
+        }
+      }
+      if (same) return id;
+    }
+    h = (h + 1) & s->slot_mask;
+  }
+  if (s->n_dfa >= s->dfa_cap) return 0xFFFFFFFFu;
+  if (s->pool_len + count > s->pool_cap) return 0xFFFFFFFFu;
+  u32 id = s->n_dfa++;
+  s->slot[h] = id + 1;
+  s->pool_len += count;
+  s->set_start[id + 1] = s->pool_len;
+  u8 acc = 0;
+  for (u32 i = 0; i < count; ++i) {
+    if (s->nfa_final[members[i]]) {
+      acc = 1;
+      break;
+    }
+  }
+  s->acc[id] = acc;
+  for (u32 k = 0; k < NSYM; ++k) s->trans[id * NSYM + k] = UNCOMPUTED;
+  return id;
+}
+
+static i32 sub_transition(Sub *s, u32 state, u32 sy) {
+  i32 t = s->trans[state * NSYM + sy];
+  if (t != UNCOMPUTED) return t;
+  u8 label = alphabet[sy];
+  // seed marks with move targets
+  for (u32 w = 0; w < (s->n_nfa + 31) / 32; ++w) s->mark[w] = 0;
+  u32 stack_n = 0;
+  for (u32 i = s->set_start[state]; i < s->set_start[state + 1]; ++i) {
+    u32 q = s->set_pool[i];
+    for (u32 a = s->arc_start[q]; a < s->arc_start[q + 1]; ++a) {
+      if (s->arc_label[a] == label) {
+        u32 to = s->arc_to[a];
+        if (!(s->mark[to >> 5] & (1u << (to & 31)))) {
+          s->mark[to >> 5] |= 1u << (to & 31);
+          scratch_stack[stack_n++] = to;
+        }
+      }
+    }
+  }
+  i32 result;
+  if (stack_n == 0) {
+    result = DEAD;
+  } else {
+    u32 count = close_and_collect(s, scratch_stack, stack_n);
+    u32 id = sub_intern(s, count);
+    result = id == 0xFFFFFFFFu ? -3 : (i32)id;
+  }
+  if (result != -3) s->trans[state * NSYM + sy] = result;
+  return result;
+}
+
+// ---- lazy product filter ----
+static u32 width;      // = n_subs
+static u32 p_cap, p_n; // product states
+static i32 *p_trans;   // p_cap*NSYM
+static u8 *p_acc;
+static u32 *p_pool; // p_cap*width tuples
+static u32 *p_slot;
+static u32 p_slot_mask;
+
+static u32 prod_intern(u32 *tuple) {
+  u32 h = hash_ints(tuple, width) & p_slot_mask;
+  for (;;) {
+    u32 v = p_slot[h];
+    if (v == 0) break;
+    u32 id = v - 1;
+    u32 same = 1;
+    for (u32 i = 0; i < width; ++i) {
+      if (p_pool[id * width + i] != tuple[i]) {
+        same = 0;
+        break;
+      }
+    }
+    if (same) return id;
+    h = (h + 1) & p_slot_mask;
+  }
+  if (p_n >= p_cap) return 0xFFFFFFFFu;
+  u32 id = p_n++;
+  p_slot[h] = id + 1;
+  u8 acc = 1;
+  for (u32 i = 0; i < width; ++i) {
+    p_pool[id * width + i] = tuple[i];
+    if (!subs[i].acc[tuple[i]]) acc = 0;
+  }
+  p_acc[id] = acc;
+  for (u32 k = 0; k < NSYM; ++k) p_trans[id * NSYM + k] = UNCOMPUTED;
+  return id;
+}
+
+static u32 tuple_scratch[MAX_CONJ];
+
+// returns product state, DEAD, or -3 on overflow
+static i32 prod_transition(u32 state, u8 ch) {
+  i32 sy = ch < 128 ? sym_of[ch] : -1;
+  if (sy < 0) return DEAD;
+  i32 t = p_trans[state * NSYM + (u32)sy];
+  if (t != UNCOMPUTED) return t;
+  for (u32 i = 0; i < width; ++i) {
+    i32 st = sub_transition(&subs[i], p_pool[state * width + i], (u32)sy);
+    if (st == -3) return -3;
+    if (st == DEAD) {
+      p_trans[state * NSYM + (u32)sy] = DEAD;
+      return DEAD;
+    }
+    tuple_scratch[i] = (u32)st;
+  }
+  u32 id = prod_intern(tuple_scratch);
+  if (id == 0xFFFFFFFFu) return -3;
+  p_trans[state * NSYM + (u32)sy] = (i32)id;
+  return (i32)id;
+}
+
+// ---- frontier / crumbs / parse (as kernel v1) ----
+static i32 *f_crumb, *f_state;
+static u8 *f_ch;
+static f64 *f_scale, *f_count, *f_pri;
+static u32 *f_next;
+static u32 f_size, f_cap;
+static i32 *c_parent;
+static u8 *c_ch;
+static u32 c_len, c_cap;
+
+static void heap_set(u32 i, u32 j) {
+  f_crumb[i] = f_crumb[j];
+  f_state[i] = f_state[j];
+  f_ch[i] = f_ch[j];
+  f_scale[i] = f_scale[j];
+  f_count[i] = f_count[j];
+  f_pri[i] = f_pri[j];
+  f_next[i] = f_next[j];
+}
+
+static int heap_push(i32 crumb, i32 state, u8 ch, f64 scale, f64 count,
+                     u32 next) {
+  if (f_size >= f_cap) return 0;
+  u32 i = f_size++;
+  f64 pri = count * scale;
+  while (i > 0) {
+    u32 parent = (i - 1) >> 2;
+    if (f_pri[parent] >= pri) break;
+    heap_set(i, parent);
+    i = parent;
+  }
+  f_crumb[i] = crumb;
+  f_state[i] = state;
+  f_ch[i] = ch;
+  f_scale[i] = scale;
+  f_count[i] = count;
+  f_pri[i] = pri;
+  f_next[i] = next;
+  return 1;
+}
+
+static i32 topCrumb, topState;
+static u8 topCh;
+static f64 topScale, topCount;
+static u32 topNext;
+
+static void heap_pop(void) {
+  topCrumb = f_crumb[0];
+  topState = f_state[0];
+  topCh = f_ch[0];
+  topScale = f_scale[0];
+  topCount = f_count[0];
+  topNext = f_next[0];
+  u32 last = --f_size;
+  if (last == 0) return;
+  f64 pri = f_pri[last];
+  u32 i = 0;
+  for (;;) {
+    u32 c0 = 4 * i + 1;
+    if (c0 >= last) break;
+    u32 m = c0;
+    f64 mp = f_pri[c0];
+    u32 cEnd = c0 + 4 < last ? c0 + 4 : last;
+    for (u32 c = c0 + 1; c < cEnd; ++c) {
+      if (f_pri[c] > mp) {
+        m = c;
+        mp = f_pri[c];
+      }
+    }
+    if (mp <= pri) break;
+    heap_set(i, m);
+    i = m;
+  }
+  heap_set(i, last);
+}
+
+#define MAXCH 300
+static u8 t_ch[MAXCH];
+static f64 t_count[MAXCH];
+static u32 t_next[MAXCH];
+static u32 t_n;
+
+static void parse_children(u32 n, f64 count) {
+  t_n = 0;
+  if (n == NO_NODE) return;
+  u32 num = idx[--n];
+  if (num >= 0x20 && num < 0x80) {
+    t_ch[0] = (u8)num;
+    t_count[0] = count;
+    t_next[0] = n;
+    t_n = 1;
+    return;
+  }
+  u32 count_size = num < 0xC0 ? 1 : num < 0xE0 ? 2 : 8;
+  u32 offset_size = num < 0x20 ? 0 : num < 0xA0 ? 1 : num < 0xE0 ? 2 : 8;
+  num &= 0x1F;
+  if (num == 0) num = idx[--n];
+  u32 size = count_size + offset_size + 1;
+  u32 start = n - num * size;
+  for (u32 p = start; p < n; p += size) {
+    u8 ch = idx[p];
+    f64 ccount;
+    if (count_size == 1) {
+      ccount = idx[p + 1];
+    } else if (count_size == 2) {
+      ccount = (f64)(idx[p + 1] | ((u32)idx[p + 2] << 8));
+    } else {
+      ccount = 0;
+      f64 mul = 1;
+      for (u32 j = 0; j < 8; ++j) {
+        ccount += (f64)idx[p + 1 + j] * mul;
+        mul *= 256.0;
+      }
+    }
+    u32 next;
+    if (offset_size == 0) {
+      next = NO_NODE;
+    } else if (offset_size == 1) {
+      u32 off = idx[p + 1 + count_size];
+      next = off == 0xFF ? NO_NODE : start - off;
+    } else if (offset_size == 2) {
+      u32 off = idx[p + count_size + 1] | ((u32)idx[p + count_size + 2] << 8);
+      next = off == 0xFFFF ? NO_NODE : start - off;
+    } else {
+      int ones = 1;
+      f64 mul = 1;
+      f64 offf = 0;
+      for (u32 j = 0; j < 8; ++j) {
+        u8 b = idx[p + 1 + count_size + j];
+        if (b != 0xFF) ones = 0;
+        offf += (f64)b * mul;
+        mul *= 256.0;
+      }
+      next = ones ? NO_NODE : start - (u32)offf;
+    }
+    t_ch[t_n] = ch;
+    t_count[t_n] = ccount;
+    t_next[t_n] = next;
+    ++t_n;
+  }
+}
+
+// ---- setup API ----
+__attribute__((export_name("setup"))) void setup(u32 idx_ptr, u32 idx_len_,
+                                                 u32 alpha_ptr, f64 restart_,
+                                                 u32 f_cap_, u32 c_cap_,
+                                                 u32 io_ptr) {
+  idx = (u8 *)idx_ptr;
+  idx_len = idx_len_;
+  root = idx_len;
+  restart = restart_;
+  io = (u8 *)io_ptr;
+  u8 *alpha = (u8 *)alpha_ptr;
+  for (int i = 0; i < 256; ++i) sym_of[i] = -1;
+  for (int i = 0; i < NSYM; ++i) {
+    alphabet[i] = alpha[i];
+    sym_of[alpha[i]] = i;
+  }
+  f_cap = f_cap_;
+  c_cap = c_cap_;
+  f_crumb = (i32 *)walloc(f_cap * 4);
+  f_state = (i32 *)walloc(f_cap * 4);
+  f_ch = (u8 *)walloc(f_cap);
+  f_scale = (f64 *)walloc(f_cap * 8);
+  f_count = (f64 *)walloc(f_cap * 8);
+  f_pri = (f64 *)walloc(f_cap * 8);
+  f_next = (u32 *)walloc(f_cap * 4);
+  c_parent = (i32 *)walloc(c_cap * 4);
+  c_ch = (u8 *)walloc(c_cap);
+}
+
+// Reset per-query filter state; conjuncts get added afterwards.
+__attribute__((export_name("begin_query"))) void begin_query(u32 p_cap_) {
+  n_subs = 0;
+  p_cap = p_cap_;
+  p_n = 0;
+}
+
+// Add one conjunct NFA (already trimmed on the JS side). dfa_cap bounds the
+// lazily-built subset states for this conjunct.
+__attribute__((export_name("add_conjunct"))) u32 add_conjunct(
+    u32 n_states, u32 start, u32 arc_start_ptr, u32 arc_label_ptr,
+    u32 arc_to_ptr, u32 final_ptr, u32 dfa_cap, u32 pool_cap) {
+  if (n_subs >= MAX_CONJ) return 0;
+  Sub *s = &subs[n_subs++];
+  s->n_nfa = n_states;
+  s->start = start;
+  s->arc_start = (u32 *)arc_start_ptr;
+  s->arc_label = (u8 *)arc_label_ptr;
+  s->arc_to = (u32 *)arc_to_ptr;
+  s->nfa_final = (u8 *)final_ptr;
+  s->n_dfa = 0;
+  s->dfa_cap = dfa_cap;
+  s->trans = (i32 *)walloc(dfa_cap * NSYM * 4);
+  s->acc = (u8 *)walloc(dfa_cap);
+  s->set_start = (u32 *)walloc((dfa_cap + 1) * 4);
+  s->set_start[0] = 0;
+  s->pool_cap = pool_cap;
+  s->set_pool = (u32 *)walloc(pool_cap * 4);
+  s->pool_len = 0;
+  u32 slots = 1;
+  while (slots < dfa_cap * 2) slots <<= 1;
+  s->slot = (u32 *)walloc(slots * 4);
+  for (u32 i = 0; i < slots; ++i) s->slot[i] = 0;
+  s->slot_mask = slots - 1;
+  s->mark = (u32 *)walloc(((n_states + 31) / 32) * 4);
+  return 1;
+}
+
+// Finish filter construction: build each sub's start state, intern the
+// start tuple, allocate product tables, seed the frontier.
+__attribute__((export_name("seed"))) i32 seed(f64 total_) {
+  total = total_;
+  width = n_subs;
+  p_trans = (i32 *)walloc(p_cap * NSYM * 4);
+  p_acc = (u8 *)walloc(p_cap);
+  p_pool = (u32 *)walloc(p_cap * width * 4);
+  u32 slots = 1;
+  while (slots < p_cap * 2) slots <<= 1;
+  p_slot = (u32 *)walloc(slots * 4);
+  for (u32 i = 0; i < slots; ++i) p_slot[i] = 0;
+  p_slot_mask = slots - 1;
+  p_n = 0;
+
+  for (u32 i = 0; i < width; ++i) {
+    Sub *s = &subs[i];
+    for (u32 w = 0; w < (s->n_nfa + 31) / 32; ++w) s->mark[w] = 0;
+    s->mark[s->start >> 5] |= 1u << (s->start & 31);
+    scratch_stack[0] = s->start;
+    u32 count = close_and_collect(s, scratch_stack, 1);
+    u32 id = sub_intern(s, count);
+    if (id == 0xFFFFFFFFu) return -1;
+    tuple_scratch[i] = id;
+  }
+  u32 startProd = prod_intern(tuple_scratch);
+  if (startProd == 0xFFFFFFFFu) return -1;
+  f_size = 0;
+  c_len = 0;
+  heap_push(-1, (i32)startProd, 0, 1.0, total, root);
+  return 0;
+}
+
+// run(budget): 0 budget, 1 result, 2 done, 3 capacity overflow
+__attribute__((export_name("run"))) i32 run(u32 budget) {
+  u32 steps = 0;
+  u32 *io_steps = (u32 *)io;
+  u32 *io_len = (u32 *)(io + 4);
+  f64 *io_score = (f64 *)(io + 8);
+  u8 *io_text = io + 16;
+  while (steps < budget) {
+    if (f_size == 0) {
+      *io_steps = steps;
+      return 2;
+    }
+    heap_pop();
+    ++steps;
+    parse_children(topNext, topCount);
+    u32 newCrumb = c_len;
+    for (u32 i = 0; i < t_n; ++i) {
+      i32 s2 = prod_transition((u32)topState, t_ch[i]);
+      if (s2 == -3) {
+        *io_steps = steps;
+        return 3;
+      }
+      if (s2 >= 0) {
+        if (c_len == newCrumb) {
+          if (c_len >= c_cap) {
+            *io_steps = steps;
+            return 3;
+          }
+          c_parent[c_len] = topCrumb;
+          c_ch[c_len] = topCh;
+          ++c_len;
+        }
+        if (!heap_push((i32)newCrumb, s2, t_ch[i], topScale, t_count[i],
+                       t_next[i])) {
+          *io_steps = steps;
+          return 3;
+        }
+      }
+    }
+    if (p_acc[topState] && topCrumb != -1) {
+      u32 len = 0;
+      for (i32 i = topCrumb; i >= 0; i = c_parent[i]) ++len;
+      if (len > 500) len = 500;
+      io_text[len - 1] = topCh;
+      u32 pos = len - 1;
+      for (i32 i = topCrumb; i >= 0 && pos > 0; i = c_parent[i]) {
+        io_text[--pos] = c_ch[i];
+      }
+      *io_len = len;
+      *io_score = topScale * topCount;
+      *io_steps = steps;
+      return 1;
+    }
+    if (restart > 0.0 && topCh == 0x20 && topNext != root) {
+      f64 scale = topScale * topCount / total * restart;
+      if (scale > 0) {
+        if (!heap_push(topCrumb, topState, 0x20, scale, total, root)) {
+          *io_steps = steps;
+          return 3;
+        }
+      }
+    }
+  }
+  *io_steps = steps;
+  return 0;
+}
