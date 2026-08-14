@@ -14,7 +14,14 @@
 import { ChoiceBuffer, IndexReader } from "./index-reader.js";
 import { Filter } from "./expr-filter.js";
 
-/** Binary max-heap on count*scale, entries as parallel typed arrays. */
+/**
+ * 4-ary max-heap on count*scale, entries as parallel typed arrays. 4-ary
+ * because each level of sift-down moves seven arrays' worth of entry data:
+ * halving the depth (log4 vs log2) halves the movement, which profiling
+ * showed dominating deep searches. Pop order among equal priorities differs
+ * from a binary heap — both are valid; results are a priority queue either
+ * way.
+ */
 class Frontier {
   size = 0;
   crumb = new Int32Array(1024);
@@ -75,7 +82,7 @@ class Frontier {
     const pri = count * scale;
     // Bubble the hole up, then write the entry once.
     while (i > 0) {
-      const parent = (i - 1) >> 1;
+      const parent = (i - 1) >> 2;
       if (this.pri[parent] >= pri) break;
       this.set(i, parent);
       i = parent;
@@ -102,19 +109,25 @@ class Frontier {
     if (last === 0) return;
     // Sift the former last element down from the root.
     const pri = this.pri[last];
+    const p = this.pri;
     let i = 0;
     for (;;) {
-      const l = 2 * i + 1;
-      if (l >= last) break;
-      const r = l + 1;
-      const m = r < last && this.pri[r] > this.pri[l] ? r : l;
-      if (this.pri[m] <= pri) break;
+      const c0 = 4 * i + 1;
+      if (c0 >= last) break;
+      let m = c0;
+      let mp = p[c0];
+      const cEnd = c0 + 4 < last ? c0 + 4 : last;
+      for (let c = c0 + 1; c < cEnd; ++c) {
+        if (p[c] > mp) {
+          m = c;
+          mp = p[c];
+        }
+      }
+      if (mp <= pri) break;
       this.set(i, m);
       i = m;
     }
-    if (i !== last) this.set(i, last);
-    // Restore the entry that lived at `last` into slot i.
-    // (set(i, last) above copied it; when i === last nothing to do.)
+    this.set(i, last);
   }
 }
 
