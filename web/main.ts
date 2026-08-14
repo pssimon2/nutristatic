@@ -9,6 +9,7 @@ const RANGE_COMPUTATION = 150000;
 const PER_RUN_RESULTS = 1000;
 
 const BUNDLED_INDEXES: Array<[string, string]> = [
+  ["./en-wiki.index", "English Wikipedia (1.3 GB)"],
   ["./simple-wiki.index", "Simple English Wikipedia (43 MB)"],
   ["./demo.index", "web words + bigrams (20 MB)"],
 ];
