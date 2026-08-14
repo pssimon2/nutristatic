@@ -1,8 +1,12 @@
-# Nutrimatic, serverless
+# Nutristatic — Nutrimatic, serverless
 
 A rewrite of [Nutrimatic](https://nutrimatic.org/) ([upstream
 source](https://github.com/PuzzleTechHub/nutrimatic)) that runs with **no
-server-side code**. The pattern engine is TypeScript running in a Web Worker
+server-side code**, deployed at [nutristatic.org](https://nutristatic.org/).
+The user-facing "what is this and how does it differ from Nutrimatic"
+documentation lives in the site's
+[usage guide](https://nutristatic.org/usage.html); this README covers the
+implementation. The pattern engine is TypeScript running in a Web Worker
 in the visitor's browser; the phrase-frequency index is a plain static file.
 Deploy the built site to any static host (GitHub Pages, S3, nginx `root`,
 `python -m http.server`, …) and it works.

@@ -304,7 +304,7 @@ dlFull.addEventListener("click", () => {
 function applyQuery(query: string): void {
   if (query) {
     qInput.value = query;
-    document.title = `${query} - Nutrimatic`;
+    document.title = `${query} - Nutristatic`;
     home.hidden = true;
     resultsView.hidden = false;
     if (indexReady) startSearch(query);
@@ -313,7 +313,7 @@ function applyQuery(query: string): void {
       setStatus("loading index…");
     }
   } else {
-    document.title = "Nutrimatic";
+    document.title = "Nutristatic";
     home.hidden = false;
     resultsView.hidden = true;
     worker.postMessage({ type: "stop" });
