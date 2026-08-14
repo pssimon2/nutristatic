@@ -1,0 +1,19 @@
+node_modules/
+web/dist/
+
+# Build workspace: dumps, chunks, merged indexes (see README to rebuild)
+data/
+
+# Compiled C++ reference tools (see upstream/ and tools/; rebuild with g++)
+build-cpp/
+
+# Upstream nutrimatic clone, kept for reference and the C++ sources
+upstream/
+
+# Generated index artifacts served by the web app (rebuild via npm scripts)
+web/public/*.index
+
+*.log
+
+# Scratch screenshots from browser tests
+/*.png

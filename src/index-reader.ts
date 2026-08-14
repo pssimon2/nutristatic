@@ -1,0 +1,241 @@
+// Port of upstream index-reader.cpp.
+//
+// Index format (from upstream index.h): the index is a series of trie nodes,
+// parents following children. Each node is a table of (letter, frequency,
+// child-node-offset) entries. Node formats, selected by the last byte:
+//
+//   (letter freq)* (num[01..1F] | num 00)          leaf parent, byte counts
+//   letter[20-7F]                                  single child, same count
+//   (letter freq off)* (num+80 | num 80)           byte counts, byte offsets
+//   (letter freq off:2)* (num+A0 | num A0)         byte counts, 2-byte offsets
+//   (letter freq:2 off:2)* (num+C0 | num C0)       2-byte counts and offsets
+//   (letter freq:8 off:8)* (num+E0 | num E0)       8-byte counts and offsets
+//
+// Offsets run from the end of the child node to the start of the parent node;
+// all-ones means "no child". A node is addressed by the offset just past its
+// end; the root is the whole file length.
+//
+// Counts and offsets are stored as int64 but always fit in a JS double for
+// any realistic index (Wikipedia totals are ~10^10), so plain numbers are
+// used throughout.
+
+import { ByteSource, ViewHolder, maybeAsync } from "./byte-source.js";
+
+export const NO_NODE = -1;
+
+export interface Choice {
+  ch: number; // character code
+  count: number;
+  next: number; // node address, or NO_NODE
+}
+
+/**
+ * Reusable flat buffer for a node's children — the hot search loop reads
+ * millions of nodes, so this avoids allocating a Choice object per child.
+ */
+export class ChoiceBuffer {
+  n = 0;
+  ch = new Int32Array(64);
+  count = new Float64Array(64);
+  next = new Float64Array(64);
+
+  clear(): void {
+    this.n = 0;
+  }
+
+  push(ch: number, count: number, next: number): void {
+    if (this.n === this.ch.length) {
+      const cap = this.ch.length * 2;
+      const nch = new Int32Array(cap);
+      nch.set(this.ch);
+      this.ch = nch;
+      const ncount = new Float64Array(cap);
+      ncount.set(this.count);
+      this.count = ncount;
+      const nnext = new Float64Array(cap);
+      nnext.set(this.next);
+      this.next = nnext;
+    }
+    this.ch[this.n] = ch;
+    this.count[this.n] = count;
+    this.next[this.n] = next;
+    ++this.n;
+  }
+}
+
+// Largest possible node: count byte + mode byte + 256 entries of 17 bytes.
+const MAX_NODE_SPAN = 2 + 256 * 17;
+
+export class IndexReader {
+  private constructor(
+    private readonly source: ByteSource,
+    private readonly total: number,
+  ) {}
+
+  static async open(source: ByteSource): Promise<IndexReader> {
+    const reader = new IndexReader(source, 0);
+    // Scan the top-level nodes to compute the total count, descending through
+    // single-child chain nodes that carry no count of their own.
+    let top: Choice[] = [];
+    await reader.children(reader.root(), 0, top);
+    while (top.length === 1 && top[0].count === 0) {
+      const node = top[0].next;
+      top = [];
+      await reader.children(node, 0, top);
+    }
+    let total = 0;
+    for (const c of top) total += c.count;
+    return new IndexReader(source, total);
+  }
+
+  root(): number {
+    return this.source.length;
+  }
+
+  count(): number {
+    return this.total;
+  }
+
+  /**
+   * Append the children of `parent` to `out` (object list form; used by the
+   * walker and open()). Returns `count` minus the counts of all children —
+   * the number of phrases that terminate at this node.
+   */
+  children(
+    parent: number,
+    count: number,
+    out: Choice[],
+  ): number | Promise<number> {
+    const buf = new ChoiceBuffer();
+    const finish = (leftover: number): number => {
+      for (let i = 0; i < buf.n; ++i) {
+        out.push({ ch: buf.ch[i], count: buf.count[i], next: buf.next[i] });
+      }
+      return leftover;
+    };
+    const r = this.childrenInto(parent, count, buf);
+    if (r instanceof Promise) return r.then(finish);
+    return finish(r);
+  }
+
+  /**
+   * Flat-buffer version of children() for the search hot loop. Returns
+   * `count` minus the counts of all children. Synchronous when the backing
+   * bytes are already available.
+   */
+  childrenInto(
+    parent: number,
+    count: number,
+    out: ChoiceBuffer,
+  ): number | Promise<number> {
+    if (parent === NO_NODE) return count;
+    return maybeAsync(
+      this.source.ensure(Math.max(0, parent - MAX_NODE_SPAN), parent),
+      () => this.childrenSync(parent, count, out),
+    );
+  }
+
+  /**
+   * Hint that `node` will likely be read soon: starts fetching its bytes in
+   * the background. No-op for synchronous sources; fetch errors are ignored
+   * (the real read retries and reports them).
+   */
+  prefetch(node: number): void {
+    if (node === NO_NODE) return;
+    const r = this.source.ensure(Math.max(0, node - MAX_NODE_SPAN), node);
+    if (r) r.catch(() => {});
+  }
+
+  // Reused across calls: the view holder and the cross-boundary scratch copy.
+  private readonly viewHolder = new ViewHolder();
+  private readonly scratch = new Uint8Array(MAX_NODE_SPAN);
+
+  private childrenSync(n: number, count: number, out: ChoiceBuffer): number {
+    const src = this.source;
+    if (!(n >= 1 && n <= src.length)) this.fail(n, "node out of range");
+
+    // Get direct array access to the node's byte span; parsing with plain
+    // indexing instead of per-byte method calls is a large hot-loop win.
+    const spanStart = Math.max(0, n - MAX_NODE_SPAN);
+    const v = this.viewHolder;
+    if (!src.view(spanStart, n, v)) {
+      // Rare: span crosses a chunk boundary. Copy it into scratch.
+      for (let p = spanStart; p < n; ++p) this.scratch[p - spanStart] = src.byte(p);
+      v.bytes = this.scratch;
+      v.base = spanStart;
+    }
+    const b = v.bytes;
+    const base = v.base;
+
+    let num = b[--n - base];
+
+    if (num >= 0x20 && num < 0x80) {
+      // Single child immediately preceding, sharing this node's count.
+      if (n < 1) this.fail(n, "need immediate next");
+      out.push(num, count, n);
+      return 0;
+    }
+
+    const countSize = num < 0xc0 ? 1 : num < 0xe0 ? 2 : 8;
+    const offsetSize = num < 0x20 ? 0 : num < 0xa0 ? 1 : num < 0xe0 ? 2 : 8;
+
+    num = num & 0x1f;
+    if (num === 0) {
+      if (n < 1) this.fail(n, "need count");
+      num = b[--n - base];
+    }
+
+    const size = countSize + offsetSize + 1;
+    if (num === 0 || n < num * size) this.fail(n, "bad size");
+
+    const start = n - num * size;
+    for (let p = start - base; p < n - base; p += size) {
+      const ch = b[p];
+
+      let childCount: number;
+      if (countSize === 1) {
+        childCount = b[p + 1];
+      } else if (countSize === 2) {
+        childCount = b[p + 1] | (b[p + 2] << 8);
+      } else {
+        childCount = 0;
+        for (let j = 0; j < countSize; ++j) {
+          childCount += b[p + 1 + j] * 2 ** (j * 8);
+        }
+      }
+      if (childCount <= 0) this.fail(p + base + 1, "bad count");
+
+      let next: number;
+      if (offsetSize === 0) {
+        next = NO_NODE;
+      } else if (offsetSize === 1) {
+        const offset = b[p + 1 + countSize];
+        next = offset === 0xff ? NO_NODE : start - offset;
+      } else if (offsetSize === 2) {
+        const offset = b[p + countSize + 1] | (b[p + countSize + 2] << 8);
+        next = offset === 0xffff ? NO_NODE : start - offset;
+      } else {
+        let offset = 0;
+        let allOnes = true;
+        for (let j = 0; j < offsetSize; ++j) {
+          const byte = b[p + 1 + countSize + j];
+          if (byte !== 0xff) allOnes = false;
+          offset += byte * 2 ** (j * 8);
+        }
+        next = allOnes ? NO_NODE : start - offset;
+      }
+
+      if (next !== NO_NODE && (next < 0 || next > start)) {
+        this.fail(p + base + 1 + countSize, "bad offset");
+      }
+      out.push(ch, childCount, next);
+      count -= childCount;
+    }
+
+    return count;
+  }
+
+  private fail(n: number, message: string): never {
+    throw new Error(`index error: pos ${n}: ${message}`);
+  }
+}

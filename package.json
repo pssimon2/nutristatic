@@ -1,0 +1,26 @@
+{
+  "name": "nutrimatic-web",
+  "version": "0.1.0",
+  "description": "Client-side rewrite of Nutrimatic: pattern search over a phrase-frequency index, no server-side code",
+  "type": "module",
+  "license": "GPL-2.0",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "vite web",
+    "build": "vite build web",
+    "preview": "vite preview web",
+    "find-expr": "tsx cli/find-expr.ts",
+    "make-index": "tsx cli/make-index.ts",
+    "merge-indexes": "tsx cli/merge-indexes.ts",
+    "dump-index": "tsx cli/dump-index.ts",
+    "wordlist-index": "tsx cli/wordlist-index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "playwright-core": "^1.62.1",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}

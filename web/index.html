@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nutrimatic</title>
+  <link rel="icon" type="image/vnd.microsoft.icon" href="./favicon.ico">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { max-width: 48em; margin: 1em auto; padding: 0 1em; }
+    form { margin: 0.5em 0; }
+    #results span { line-height: 1.15; }
+    #status { color: #555; }
+    #status.error { color: red; font-weight: bold; }
+    #indexline { font-size: 0.8em; color: #777; margin-top: 2em; }
+    #indexline input { width: 24em; }
+    em.tagline { display: block; margin: 0.5em 0; }
+    button.linkish { margin-left: 0.5em; }
+  </style>
+</head>
+<body>
+  <em class="tagline">Almost, but not quite, entirely unlike tea.
+    <img src="./nutritea-small.png" alt="" height="24" style="vertical-align: middle"></em>
+
+  <form id="form" action="" method="get">
+    <input type="search" id="q" name="q" size="45" autocomplete="off"
+           autocorrect="off" autocapitalize="off" spellcheck="false">
+    <input type="submit" value="Go">
+  </form>
+
+  <div id="home">
+    <p>Matches patterns against a dictionary of words and phrases.
+    Text is normalized to lowercase letters, numbers and spaces.
+    More common results are returned first.
+    All searching happens <b>in your browser</b> — there is no server.</p>
+
+    <h3>Syntax</h3>
+    <ul>
+      <li><em>a-z, 0-9, space</em> - literal match</li>
+      <li><em>[], (), {}, |, ., ?, *, +</em> - same as regexp</li>
+      <li><em>"expr"</em> - forbid word breaks without a space or hyphen</li>
+      <li><em>expr&amp;expr</em> - both expressions must match</li>
+      <li><em>&lt;aaagmnr&gt;, &lt;(gram)(ana)&gt;</em> - anagram of contents
+        (<a href="./usage.html#syntax_anagram">note warnings</a>)</li>
+      <li><em>_ (underscore)</em> - alphanumeric, not space: [a-z0-9]</li>
+      <li><em># (number sign)</em> - digit: [0-9]</li>
+      <li><em>- (hyphen)</em> - optional space: ( ?)</li>
+      <li><em>A</em> - alphabetic: [a-z]</li>
+      <li><em>C</em> - consonant (including y)</li>
+      <li><em>V</em> - vowel ([aeiou], not y)</li>
+    </ul>
+
+    <h3>Examples</h3>
+    <ul id="examples"></ul>
+
+    <h3>More</h3>
+    <ul>
+      <li><a href="./usage.html">Usage guide</a>: usage tips, worked examples.</li>
+      <li>This is a serverless rewrite of
+        <a href="https://nutrimatic.org/">nutrimatic.org</a>; the pattern
+        engine runs in a Web Worker against a phrase-frequency index fetched
+        as a static file.</li>
+    </ul>
+  </div>
+
+  <div id="resultsview" hidden>
+    <p id="status"></p>
+    <div id="results"></div>
+    <p id="after"></p>
+  </div>
+
+  <p id="indexline">
+    index: <select id="indexpick"></select>
+    <span id="indexinfo">not loaded</span>
+    <button id="dlfull" hidden></button><br>
+    <span id="customrow" hidden>
+      <label>index URL: <input type="text" id="indexurl"></label>
+      <button id="setindex">load</button>
+    </span>
+  </p>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
