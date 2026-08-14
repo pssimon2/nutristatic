@@ -123,6 +123,24 @@ let currentSize = 0;
 
 const post = (msg: unknown) => postMessage(msg);
 
+// Macrotask yield that lets queued messages (stop/continue) be processed.
+// Deliberately NOT setTimeout: browsers clamp timers in background pages to
+// ~1s, which turned a 1M-step search into ~50 seconds of sleeping when the
+// tab wasn't focused. MessageChannel posts are never throttled.
+const yieldChannel = new MessageChannel();
+let yieldResolve: (() => void) | null = null;
+yieldChannel.port1.onmessage = () => {
+  const r = yieldResolve;
+  yieldResolve = null;
+  r?.();
+};
+function macroYield(): Promise<void> {
+  return new Promise((resolve) => {
+    yieldResolve = resolve;
+    yieldChannel.port2.postMessage(0);
+  });
+}
+
 async function fetchWithRetry(
   url: string,
   init?: RequestInit,
@@ -575,7 +593,7 @@ async function runSession(maxSteps: number, maxResults: number): Promise<void> {
       () => {
         if (token !== runToken) throw new StopError();
         // Yield so incoming messages (stop / continue) are processed.
-        return new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return macroYield();
       },
     );
     if (token !== runToken) return;

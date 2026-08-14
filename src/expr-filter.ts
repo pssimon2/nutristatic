@@ -148,14 +148,30 @@ export class ProductFilter implements Filter {
   readonly startState: number;
 
   private readonly subs: ExprFilter[];
+  private readonly width: number; // ints per tuple
   private trans = new Int32Array(0);
   private accepting: number[] = [];
-  private tuples: number[][] = [];
-  private readonly tupleIds = new Map<string, number>();
+  // Tuples in a flat pool (entry i at [i*width, (i+1)*width)); the hash
+  // table stores entry+1 in open-addressed slots. String-keyed Maps here
+  // profiled at ~23% of anagram search time (key building + boxed hashing).
+  private pool = new Int32Array(0);
+  private count = 0;
+  private slots = new Int32Array(1 << 12); // power of two, 0 = empty
+  private slotMask = (1 << 12) - 1;
 
   constructor(conjuncts: Nfa[]) {
     this.subs = conjuncts.map((nfa) => new ExprFilter(nfa));
+    this.width = this.subs.length;
     this.startState = this.intern(this.subs.map((f) => f.startState));
+  }
+
+  private hashTuple(tuple: ArrayLike<number>, base: number): number {
+    let h = 0x9e3779b9;
+    for (let i = 0; i < this.width; ++i) {
+      h = Math.imul(h ^ (tuple[base + i] as number), 0x85ebca6b);
+      h ^= h >>> 13;
+    }
+    return h >>> 0;
   }
 
   get numStates(): number {
@@ -173,11 +189,13 @@ export class ProductFilter implements Filter {
     return t === UNCOMPUTED ? this.compute(state, sym, ch) : t;
   }
 
+  private readonly scratch: number[] = [];
+
   private compute(state: number, sym: number, ch: number): number {
-    const tuple = this.tuples[state];
-    const next: number[] = new Array(this.subs.length);
-    for (let i = 0; i < this.subs.length; ++i) {
-      const t = this.subs[i].transition(tuple[i], ch);
+    const base = state * this.width;
+    const next = this.scratch;
+    for (let i = 0; i < this.width; ++i) {
+      const t = this.subs[i].transition(this.pool[base + i], ch);
       if (t === DEAD) {
         this.trans[state * NSYM + sym] = DEAD;
         return DEAD;
@@ -189,18 +207,44 @@ export class ProductFilter implements Filter {
     return id;
   }
 
-  private intern(tuple: number[]): number {
-    const key = tuple.join(",");
-    const existing = this.tupleIds.get(key);
-    if (existing !== undefined) return existing;
+  private intern(tuple: ArrayLike<number>): number {
+    const mask = this.slotMask;
+    let i = this.hashTuple(tuple, 0) & mask;
+    for (;;) {
+      const slot = this.slots[i];
+      if (slot === 0) break;
+      const base = (slot - 1) * this.width;
+      let same = true;
+      for (let j = 0; j < this.width; ++j) {
+        if (this.pool[base + j] !== (tuple[j] as number)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return slot - 1;
+      i = (i + 1) & mask;
+    }
 
-    const id = this.tuples.length;
+    const id = this.count;
     if (id >= MAX_STATES) throw new Error("pattern too complex");
-    this.tupleIds.set(key, id);
-    this.tuples.push(tuple);
+    if ((id + 1) * this.width > this.pool.length) {
+      const grown = new Int32Array(
+        Math.max(256 * this.width, this.pool.length * 2),
+      );
+      grown.set(this.pool);
+      this.pool = grown;
+    }
+    for (let j = 0; j < this.width; ++j) {
+      this.pool[id * this.width + j] = tuple[j] as number;
+    }
+    ++this.count;
+    this.slots[i] = id + 1;
+    // Grow the table at ~70% load, rehashing from the pool.
+    if (this.count * 10 > (this.slotMask + 1) * 7) this.rehash();
+
     let acc = 1;
-    for (let i = 0; i < this.subs.length; ++i) {
-      if (!this.subs[i].isAccepting(tuple[i])) {
+    for (let k = 0; k < this.width; ++k) {
+      if (!this.subs[k].isAccepting(tuple[k] as number)) {
         acc = 0;
         break;
       }
@@ -216,6 +260,17 @@ export class ProductFilter implements Filter {
       this.trans.fill(UNCOMPUTED, id * NSYM, (id + 1) * NSYM);
     }
     return id;
+  }
+
+  private rehash(): void {
+    const newSize = (this.slotMask + 1) * 2;
+    this.slots = new Int32Array(newSize);
+    this.slotMask = newSize - 1;
+    for (let e = 0; e < this.count; ++e) {
+      let i = this.hashTuple(this.pool, e * this.width) & this.slotMask;
+      while (this.slots[i] !== 0) i = (i + 1) & this.slotMask;
+      this.slots[i] = e + 1;
+    }
   }
 }
 

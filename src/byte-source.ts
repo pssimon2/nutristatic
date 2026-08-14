@@ -77,8 +77,17 @@ export class SyncFileSource implements ByteSource {
     private readonly file: SyncFileReader,
     readonly length: number,
     private readonly chunkSize = 1 << 17,
-    private readonly maxChunks = 512,
-  ) {}
+    maxChunks?: number,
+  ) {
+    // Broad searches walk working sets in the hundreds of MB; a small LRU
+    // thrashes into per-node file reads (measured 20x slowdown). Users on
+    // this path explicitly downloaded the index, so scale the cache up to
+    // the full file, capped at 512MB.
+    this.maxChunks =
+      maxChunks ?? Math.min(4096, Math.ceil(length / this.chunkSize));
+  }
+
+  private readonly maxChunks: number;
 
   private chunk(c: number): Uint8Array {
     let data = this.cache.get(c);

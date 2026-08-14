@@ -268,6 +268,16 @@ worker.onmessage = (ev) => {
             tryHarder,
           ),
         );
+        if (indexMode === "range" && !dlFull.hidden) {
+          // Broad searches walk far more of the index than streaming suits;
+          // a downloaded copy runs them at full speed.
+          afterEl.append(
+            actionButton(
+              `or download the index once (${dlFull.textContent!.match(/\(([^)]+)\)/)?.[1] ?? ""}) for much faster searching »`,
+              startFullDownload,
+            ),
+          );
+        }
       } else {
         // Result budget filled; offer the next page.
         afterEl.append(actionButton("More results »", moreResults));
@@ -290,7 +300,7 @@ $("setindex").addEventListener("click", () => {
   navigateToIndex(indexUrlInput.value.trim() || null);
 });
 
-dlFull.addEventListener("click", () => {
+function startFullDownload(): void {
   // Cancels any running search; the current query re-runs once downloaded.
   dlFull.disabled = true;
   searching = false;
@@ -300,7 +310,9 @@ dlFull.addEventListener("click", () => {
   afterEl.textContent = "";
   indexReady = false;
   worker.postMessage({ type: "download-full" });
-});
+}
+
+dlFull.addEventListener("click", startFullDownload);
 
 function applyQuery(query: string): void {
   if (query) {

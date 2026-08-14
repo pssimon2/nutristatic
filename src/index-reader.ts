@@ -276,8 +276,24 @@ export class IndexReader {
     const spanStart = Math.max(0, n - MAX_NODE_SPAN);
     const v = this.viewHolder;
     if (!src.view(spanStart, n, v)) {
-      // Rare: span crosses a chunk boundary. Copy it into scratch.
-      for (let p = spanStart; p < n; ++p) this.scratch[p - spanStart] = src.byte(p);
+      // Span crosses a chunk boundary (~3% of nodes on chunked sources):
+      // bulk-copy the pieces via single-chunk views. A per-byte loop here
+      // once cost 96% of disk-mode search time (per-byte Map + LRU work).
+      let p = spanStart;
+      while (p < n) {
+        if (src.view(p, p + 1, v)) {
+          const chunkEnd = v.base + v.bytes.length;
+          const take = Math.min(n, chunkEnd) - p;
+          this.scratch.set(
+            v.bytes.subarray(p - v.base, p - v.base + take),
+            p - spanStart,
+          );
+          p += take;
+        } else {
+          this.scratch[p - spanStart] = src.byte(p);
+          ++p;
+        }
+      }
       v.bytes = this.scratch;
       v.base = spanStart;
     }

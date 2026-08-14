@@ -1,0 +1,12 @@
+import { chromium } from "playwright-core";
+const exe = `${process.env.HOME}/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`;
+const browser = await chromium.launch({ executablePath: exe });
+const page = await (await browser.newContext()).newPage();
+let bytes = 0;
+page.on("request", (r) => { const m = /bytes=(\d+)-(\d+)/.exec(r.headers()["range"] ?? ""); if (m && r.url().includes("de-wiki")) bytes += +m[2] - +m[1] + 1; });
+const t0 = Date.now();
+await page.goto("https://nutristatic.org/?q=%3Caeeimnrsttu%3E&index=.%2Fde-wiki.index");
+await page.waitForFunction(() => document.querySelectorAll("#results span").length > 0 || document.getElementById("after").textContent.length > 0, null, { timeout: 300000 });
+const n = await page.$$eval("#results span", (e) => e.length);
+console.log(`cold range: ${((Date.now()-t0)/1000).toFixed(1)}s to ${n ? "first result" : "limit"} | ${(bytes/1048576).toFixed(0)}MB requested | after="${await page.textContent("#after")}"`);
+await browser.close();
