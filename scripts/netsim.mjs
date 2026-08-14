@@ -23,7 +23,7 @@ const fakeFetch = async (url, init) => {
   });
 };
 
-for (const q of ["<aciimnrttu>", '"C*aC*eC*iC*oC*uC*yC*"', "solar s_stem"]) {
+for (const q of (process.env.QUERIES || "<aciimnrttu>").split("|")) {
   const source = await HttpRangeSource.open("http://sim/index", {
     fetchFn: fakeFetch, chunkSize: 1 << 15, maxChunks: 4096,
   });
