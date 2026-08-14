@@ -24,8 +24,45 @@ const TINY_LIMIT = 4 * 1024 * 1024;
 // searches (the heavy-anagram case drops from ~30s to under a second).
 const FULL_DOWNLOAD_LIMIT = 2 * 1024 * 1024 * 1024;
 // Full downloads happen in ranged pieces with per-piece retry, so a flaky
-// (especially mobile) connection doesn't restart the whole transfer.
+// (especially mobile) connection doesn't restart the whole transfer. A few
+// pieces stream concurrently to keep the pipe full across RTTs.
 const DOWNLOAD_PIECE = 4 * 1024 * 1024;
+const DOWNLOAD_CONCURRENCY = 4;
+
+/**
+ * Fetch [0, size) in retried pieces, DOWNLOAD_CONCURRENCY at a time, handing
+ * each completed piece to `write(part, offset)` (offset-addressed, so
+ * completion order doesn't matter). Reports progress as bytes completed.
+ */
+async function fetchPieces(
+  url: string,
+  size: number,
+  write: (part: Uint8Array, offset: number) => void,
+): Promise<void> {
+  let nextOffset = 0;
+  let loaded = 0;
+  const runner = async (): Promise<void> => {
+    for (;;) {
+      const off = nextOffset;
+      if (off >= size) return;
+      nextOffset += DOWNLOAD_PIECE;
+      const end = Math.min(off + DOWNLOAD_PIECE, size) - 1;
+      const resp = await fetchWithRetry(url, {
+        headers: { Range: `bytes=${off}-${end}` },
+      });
+      const part = new Uint8Array(await resp.arrayBuffer());
+      if (part.length !== end - off + 1) {
+        throw new Error(`short range response (${part.length} bytes at ${off})`);
+      }
+      write(part, off);
+      loaded += part.length;
+      post({ type: "loading", mode: "download", bytes: size, loaded });
+    }
+  };
+  await Promise.all(
+    Array.from({ length: DOWNLOAD_CONCURRENCY }, () => runner()),
+  );
+}
 const CACHE_NAME = "nutrimatic-index-v1";
 // v2: chunk keys now include the chunk size — entries cached under a
 // different chunking must never be reinterpreted.
@@ -168,18 +205,7 @@ async function downloadToOpfs(
   }
   try {
     sync.truncate(0);
-    for (let off = 0; off < size; off += DOWNLOAD_PIECE) {
-      const end = Math.min(off + DOWNLOAD_PIECE, size) - 1;
-      const resp = await fetchWithRetry(url, {
-        headers: { Range: `bytes=${off}-${end}` },
-      });
-      const part = new Uint8Array(await resp.arrayBuffer());
-      if (part.length !== end - off + 1) {
-        throw new Error(`short range response (${part.length} bytes at ${off})`);
-      }
-      sync.write(part, { at: off });
-      post({ type: "loading", mode: "download", bytes: size, loaded: off + part.length });
-    }
+    await fetchPieces(url, size, (part, off) => sync.write(part, { at: off }));
     sync.flush();
     return new SyncFileSource(sync as SyncFileReader, size);
   } catch (e) {
@@ -243,18 +269,7 @@ async function downloadWhole(
 
   const data = new Uint8Array(size);
   if (ranged) {
-    for (let off = 0; off < size; off += DOWNLOAD_PIECE) {
-      const end = Math.min(off + DOWNLOAD_PIECE, size) - 1;
-      const resp = await fetchWithRetry(url, {
-        headers: { Range: `bytes=${off}-${end}` },
-      });
-      const part = new Uint8Array(await resp.arrayBuffer());
-      if (part.length !== end - off + 1) {
-        throw new Error(`short range response (${part.length} bytes at ${off})`);
-      }
-      data.set(part, off);
-      post({ type: "loading", mode: "download", bytes: size, loaded: off + part.length });
-    }
+    await fetchPieces(url, size, (part, off) => data.set(part, off));
   } else {
     const resp = await fetchWithRetry(url);
     const buf = new Uint8Array(await resp.arrayBuffer());
