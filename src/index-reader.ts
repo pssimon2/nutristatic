@@ -66,6 +66,87 @@ export class ChoiceBuffer {
 // Largest possible node: count byte + mode byte + 256 entries of 17 bytes.
 const MAX_NODE_SPAN = 2 + 256 * 17;
 
+interface CachedNode {
+  count: number; // caller count this was computed with (safety check)
+  leftover: number;
+  n: number;
+  data: Float64Array; // interleaved [ch, count, next] triples
+}
+
+/**
+ * Parsed-node cache. Anagram-class searches revisit the same trie nodes
+ * constantly (~86% of parses observed) because restarts and many filter
+ * states walk identical prefixes, and node parsing dominates search time —
+ * so caching parsed child tables is a large win there. Linear scans revisit
+ * ~0%, so the miss path must be almost free: this is an open-addressed hash
+ * table over typed arrays (JS Map/Set keyed by Float64Array-sourced numbers
+ * hash boxed doubles — ~6µs per op, 10x slower than the parse itself).
+ * Nodes are admitted on their second parse; the table simply clears when
+ * full instead of evicting.
+ */
+const CACHE_SLOTS = 1 << 17; // power of two
+const CACHE_MAX_ENTRIES = 32768;
+const CACHE_MAX_USED = (CACHE_SLOTS * 3) >> 2;
+const SEEN = -1;
+const MISS = -2;
+
+class ParseCache {
+  private keys = new Float64Array(CACHE_SLOTS); // 0 = empty (offsets are >= 1)
+  private vals = new Int32Array(CACHE_SLOTS); // SEEN, or entry index
+  private entries: CachedNode[] = [];
+  private used = 0;
+
+  private slot(key: number): number {
+    let h = key % 0x7fffffff | 0;
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+    h ^= h >>> 13;
+    let i = h & (CACHE_SLOTS - 1);
+    const keys = this.keys;
+    while (keys[i] !== 0 && keys[i] !== key) i = (i + 1) & (CACHE_SLOTS - 1);
+    return i;
+  }
+
+  /** Entry index, SEEN (parsed once before), or MISS. */
+  find(key: number): number {
+    const i = this.slot(key);
+    return this.keys[i] === 0 ? MISS : this.vals[i];
+  }
+
+  entry(idx: number): CachedNode {
+    return this.entries[idx];
+  }
+
+  /** Record a first parse (MISS -> SEEN). */
+  markSeen(key: number): void {
+    if (this.used >= CACHE_MAX_USED) this.clear();
+    const i = this.slot(key);
+    if (this.keys[i] === 0) {
+      this.keys[i] = key;
+      this.vals[i] = SEEN;
+      ++this.used;
+    }
+  }
+
+  /** Promote a SEEN node to a cached entry. */
+  insert(key: number, node: CachedNode): void {
+    if (this.entries.length >= CACHE_MAX_ENTRIES) this.clear();
+    const i = this.slot(key);
+    if (this.keys[i] === 0) {
+      if (this.used >= CACHE_MAX_USED) return; // full and freshly cleared race
+      this.keys[i] = key;
+      ++this.used;
+    }
+    this.vals[i] = this.entries.length;
+    this.entries.push(node);
+  }
+
+  private clear(): void {
+    this.keys.fill(0);
+    this.entries.length = 0;
+    this.used = 0;
+  }
+}
+
 export class IndexReader {
   private constructor(
     private readonly source: ByteSource,
@@ -123,15 +204,47 @@ export class IndexReader {
    * `count` minus the counts of all children. Synchronous when the backing
    * bytes are already available.
    */
+  private readonly parseCache = new ParseCache();
+
   childrenInto(
     parent: number,
     count: number,
     out: ChoiceBuffer,
   ): number | Promise<number> {
     if (parent === NO_NODE) return count;
+
+    const found = this.parseCache.find(parent);
+    if (found >= 0) {
+      const hit = this.parseCache.entry(found);
+      if (hit.count === count) {
+        const d = hit.data;
+        for (let i = 0, j = 0; i < hit.n; ++i, j += 3) {
+          out.push(d[j], d[j + 1], d[j + 2]);
+        }
+        return hit.leftover;
+      }
+    }
+
     return maybeAsync(
       this.source.ensure(Math.max(0, parent - MAX_NODE_SPAN), parent),
-      () => this.childrenSync(parent, count, out),
+      () => {
+        const base = out.n;
+        const leftover = this.childrenSync(parent, count, out);
+        if (found === SEEN) {
+          // Second parse: worth caching now.
+          const n = out.n - base;
+          const data = new Float64Array(n * 3);
+          for (let i = 0, j = 0; i < n; ++i, j += 3) {
+            data[j] = out.ch[base + i];
+            data[j + 1] = out.count[base + i];
+            data[j + 2] = out.next[base + i];
+          }
+          this.parseCache.insert(parent, { count, leftover, n, data });
+        } else if (found === MISS) {
+          this.parseCache.markSeen(parent);
+        }
+        return leftover;
+      },
     );
   }
 
