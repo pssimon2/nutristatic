@@ -81,6 +81,8 @@ html = html
 // point them at the live site so they work whenever the user is online.
 html = html.replace(/"\.\/usage\.html/g, '"https://nutristatic.org/usage.html');
 html = html.replace(/"\.\/indexes\.html/g, '"https://nutristatic.org/indexes.html');
+html = html.replace(/"\.\/impressum\.html/g, '"https://nutristatic.org/impressum.html');
+html = html.replace(/"\.\/datenschutz\.html/g, '"https://nutristatic.org/datenschutz.html');
 // Drop the "download the offline version" link — this IS that file.
 html = html.replace(/<li id="offlinelink">[\s\S]*?<\/li>/, "");
 // Swap the module <script src> for the inlined worker + main bundles.

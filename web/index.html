@@ -82,6 +82,8 @@
     #status.error { color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
     #dlmsg { display: block; margin-top: 0.4em; color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
     #indexline { font-size: 0.8em; color: #767676; margin-top: 2em; }
+    #legal { font-size: 0.8em; color: #767676; margin-top: 3em; }
+    #legal a { color: inherit; }
     #indexline input { width: 24em; }
     /* Never force horizontal scrolling on narrow screens. */
     input, select, button { max-width: 100%; box-sizing: border-box; }
@@ -159,6 +161,12 @@
       <button id="setindex">load</button>
     </span>
   </p>
+
+  <footer id="legal">
+    <a href="./impressum.html">Impressum</a> ·
+    <a href="./datenschutz.html">Datenschutz</a> ·
+    <a href="https://github.com/pssimon2/nutristatic">Source (GPL-2.0)</a>
+  </footer>
 
   <script type="module" src="./main.ts"></script>
 </body>
