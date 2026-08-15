@@ -10,7 +10,7 @@ implementation. The pattern engine is TypeScript running in a Web Worker
 in the visitor's browser; the phrase-frequency index is a plain static file.
 (A WebAssembly port of the engine — `wasm-kernel/kernel.c` driven by
 `src/wasm-session.ts` — takes over automatically for fully-local indexes,
-worth 1.2–1.3x on heavy anagrams; the JS engine remains the reference
+worth ~1.6x on heavy anagrams; the JS engine remains the reference
 implementation, the fallback, and the range-mode engine.)
 Deploy the built site to any static host (GitHub Pages, S3, nginx `root`,
 `python -m http.server`, …) and it works.
@@ -127,7 +127,7 @@ instant local searching.
 Heavy anagram (`<aciimnrttu>`, English index): ~5 s cold range mode,
 ~2 s from a device-stored (OPFS) copy including page load, 0.1 s warm
 revisit. Engine: 1.3–3.5M steps/s in-memory (JS; the WASM kernel adds
-1.2–1.3x on heavy anagrams for fully-local indexes); a 500k-step,
+~1.6x on heavy anagrams for fully-local indexes); a 500k-step,
 100k-result search costs ~7 MB of heap. Whole-index download: 1.3 GB
 transferred as 785 MB compressed in ~30 s on fast links, cancellable.
 Compressed range transport (`.idxz` sidecars) cuts per-query transfer

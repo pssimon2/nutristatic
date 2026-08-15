@@ -21,7 +21,7 @@ and `test/wasm-session.test.ts` locks parity (identical score streams), the
 per-query heap reset, resumability, and the engine-ownership guard that stops
 a superseded run from stepping a re-seeded kernel.
 
-The kernel is worth roughly 1.2–1.3× on the heavy anagram queries that
+The kernel is worth roughly 1.6× on the heavy anagram queries that
 dominate search time; the JS typed-array hot loop is otherwise near-native
 for this workload, so the JS engine stays the reference and the fallback.
 
