@@ -217,10 +217,32 @@ function addResult(score: number, text: string): void {
   const span = document.createElement("span");
   span.style.fontSize = `${fontSize(score)}em`;
   span.textContent = text;
-  span.title = `score ${score.toPrecision(4)}`;
+  span.title = `score ${score.toPrecision(4)} · click to copy`;
   resultsEl.append(span, document.createElement("br"));
   ++resultCount;
 }
+
+// Click a result to copy it (solvers copy answers constantly). Delegated from
+// the container so 1000 results cost one listener, and deliberately invisible
+// until used: no extra chrome, just the cursor, the title hint, and a brief
+// flash on the word itself.
+resultsEl.addEventListener("click", (ev) => {
+  const span = (ev.target as HTMLElement | null)?.closest?.("span");
+  if (!span || !resultsEl.contains(span)) return;
+  // Don't hijack a drag-selection of the text.
+  if (!(window.getSelection()?.isCollapsed ?? true)) return;
+  const text = span.textContent ?? "";
+  if (!text) return;
+  void navigator.clipboard?.writeText(text).then(
+    () => {
+      span.classList.add("copied");
+      setTimeout(() => span.classList.remove("copied"), 500);
+    },
+    () => {
+      // Clipboard blocked (permissions/insecure context): leave the text be.
+    },
+  );
+});
 
 function actionButton(label: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement("button");
@@ -643,4 +665,11 @@ if (OFFLINE) {
 } else {
   void postOpen();
   applyQuery((params.get("q") || "").trim());
+}
+
+// Put the cursor in the search box on arrival — but only with a real keyboard.
+// On touch devices focusing pops the on-screen keyboard over the page, which
+// is worse than one tap.
+if (matchMedia("(hover: hover) and (pointer: fine)").matches) {
+  qInput.focus();
 }

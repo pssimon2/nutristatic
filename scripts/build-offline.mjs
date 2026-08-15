@@ -85,6 +85,10 @@ html = html.replace(/"\.\/impressum\.html/g, '"https://nutristatic.org/impressum
 html = html.replace(/"\.\/datenschutz\.html/g, '"https://nutristatic.org/datenschutz.html');
 // Drop the "download the offline version" link — this IS that file.
 html = html.replace(/<li id="offlinelink">[\s\S]*?<\/li>/, "");
+// Drop the installable-app links: a single file:// page has no manifest or
+// icon files to resolve, and a PWA install makes no sense for it.
+html = html.replace(/\n?\s*<link rel="manifest"[^>]*>/, "");
+html = html.replace(/\n?\s*<link rel="apple-touch-icon"[^>]*>/, "");
 // Swap the module <script src> for the inlined worker + main bundles.
 html = html.replace(
   /<script type="module" src="\.\/main\.ts"><\/script>/,

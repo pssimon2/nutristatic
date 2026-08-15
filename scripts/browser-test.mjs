@@ -13,6 +13,8 @@ const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 // "remove device copy" asks for confirmation; accept it in the test.
 page.on("dialog", (d) => d.accept());
+// Click-to-copy writes to the clipboard.
+await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
 const waitInfo = (substr, timeout = 120000) =>
   page.waitForFunction(
@@ -33,6 +35,27 @@ const waitDone = (timeout = 120000) =>
 await page.goto(base + "?index=./demo.index");
 await page.waitForSelector("#examples li");
 console.log("title:", await page.title());
+
+// Installable app: the manifest is served and names icons that exist.
+const mf = await page.evaluate(async () => {
+  const r = await fetch("./manifest.webmanifest");
+  return r.ok ? await r.json() : null;
+});
+if (!mf || !mf.icons?.length) throw new Error("manifest missing/invalid");
+for (const icon of mf.icons) {
+  const ok = await page.evaluate(
+    async (src) => (await fetch(src)).ok,
+    new URL(icon.src, base).href,
+  );
+  if (!ok) throw new Error(`manifest icon missing: ${icon.src}`);
+}
+console.log("manifest:", mf.name, "| icons:", mf.icons.map((i) => i.sizes).join(" "));
+
+// Search box is focused on arrival (desktop pointer).
+const focused = await page.evaluate(() => document.activeElement?.id);
+console.log("autofocus:", focused);
+if (focused !== "q") throw new Error("search box not focused on load");
+
 await waitInfo("loading only");
 console.log("range info:", await page.textContent("#indexinfo"));
 const dl = await page.textContent("#dlfull");
@@ -46,6 +69,12 @@ await waitDone();
 const first = await page.$eval("#results span", (e) => e.textContent);
 console.log("range search first:", first);
 if (first !== "anagram") throw new Error("wrong first result");
+
+// Click a result to copy it.
+await page.click("#results span");
+const clip = await page.evaluate(() => navigator.clipboard.readText());
+console.log("click-to-copy:", JSON.stringify(clip));
+if (clip !== "anagram") throw new Error("click-to-copy failed");
 
 // Full download -> disk mode -> WASM engine.
 await page.click("#dlfull");

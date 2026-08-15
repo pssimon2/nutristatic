@@ -63,6 +63,11 @@
     })();
   </script>
   <link rel="icon" type="image/vnd.microsoft.icon" href="./favicon.ico">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <!-- Browser UI tint, matched to the page's own light/dark rendering. -->
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     /* Follow the OS theme: default UA colors handle text/background/inputs,
@@ -77,7 +82,9 @@
        low-score results — matching nutrimatic.org's tight packing, which gets
        it for free from quirks mode. */
     #results { line-height: 0; }
-    #results span { line-height: 1.15; }
+    #results span { line-height: 1.15; cursor: pointer; }
+    /* Brief confirmation that a clicked result was copied. */
+    #results span.copied { background: #ffe58a; background: light-dark(#ffe58a, #5a4a12); }
     #status { color: #767676; }
     #status.error { color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
     #dlmsg { display: block; margin-top: 0.4em; color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }

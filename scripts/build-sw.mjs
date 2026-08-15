@@ -15,7 +15,14 @@ if (!fs.existsSync(swPath)) {
 // The app shell: the entry HTML, a couple of small statics, and every
 // content-hashed asset (the main bundle, the search worker, the WASM kernel).
 const precache = ["/index.html"];
-for (const name of ["favicon.ico", "nutritea-small.png"]) {
+for (const name of [
+  "favicon.ico",
+  "nutritea-small.png",
+  // Installable-app assets: without these a launched PWA has no icon offline.
+  "manifest.webmanifest",
+  "apple-touch-icon.png",
+  "icon-192.png",
+]) {
   if (fs.existsSync(path.join(dist, name))) precache.push("/" + name);
 }
 const assetsDir = path.join(dist, "assets");
