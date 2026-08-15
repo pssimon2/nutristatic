@@ -21,3 +21,6 @@ web/public/*.idxz
 
 # Ralph-loop / Claude session state
 .claude/
+
+# Generated self-contained offline build (npm run build-offline)
+web/dist-offline/

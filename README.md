@@ -56,9 +56,25 @@ npm test               # vitest: format round-trip, upstream test-expr golden
                        # cases, HTTP-range integration
 npm run dev            # vite dev server
 npm run build          # static site -> web/dist/
+npm run build-offline  # self-contained single file -> web/dist-offline/
 node scripts/browser-test.mjs   # drives the built site headless (needs
                                 # `npm run build` + `vite preview web --port 4517`)
 ```
+
+### Offline single-file build
+
+`npm run build-offline` generates `web/dist-offline/nutristatic-offline.html`:
+one self-contained file that runs by double-clicking it (`file://`, no server).
+Open it, then pick (or drop) a local `.index` file — `File.slice()` serves the
+same on-demand range reads the network path uses, so even a multi-GB local
+index opens instantly. The site also links it under "Offline version »".
+
+It is *generated from the same sources* — `web/main.ts`, `web/worker.ts`, and
+the `src/` engine, with an `OFFLINE` build flag flipping on the file-picker
+path (`scripts/build-offline.mjs` inlines the worker as a Blob and the WASM as
+a data URI). Re-run it after any change; there is no separate offline codebase
+to keep in sync. The served build ships it too — the deploy copies
+`web/dist-offline/nutristatic-offline.html` into `web/dist/` before rsync.
 
 ## Searching from the command line
 

@@ -11,6 +11,7 @@ import {
   SyncFileSource,
 } from "../src/byte-source.js";
 import { CompressedRangeSource, fetchIdxzPrefix } from "../src/compressed-source.js";
+import { FileRangeSource } from "../src/file-source.js";
 import { inflateRawBlock } from "../src/idxz.js";
 import { IndexReader } from "../src/index-reader.js";
 import { ParseError } from "../src/find-expr.js";
@@ -124,6 +125,11 @@ interface CancelDownloadMsg {
 interface RemoveCopyMsg {
   type: "remove-copy";
 }
+interface OpenFileMsg {
+  type: "open-file";
+  file: Blob;
+  name: string;
+}
 type InMsg =
   | OpenMsg
   | SearchMsg
@@ -131,10 +137,15 @@ type InMsg =
   | StopMsg
   | DownloadFullMsg
   | CancelDownloadMsg
-  | RemoveCopyMsg;
+  | RemoveCopyMsg
+  | OpenFileMsg;
 
 let reader: IndexReader | null = null;
-let rangeSource: HttpRangeSource | CompressedRangeSource | null = null;
+let rangeSource:
+  | HttpRangeSource
+  | CompressedRangeSource
+  | FileRangeSource
+  | null = null;
 let diskSource: SyncFileSource | null = null;
 let session: SearchSession | WasmSession | null = null;
 let runToken = 0; // bumped to cancel an in-flight run
@@ -209,9 +220,10 @@ const postReady = (msg: unknown) => {
 };
 
 // Reclaim storage from obsolete cache versions (best-effort, async).
-// globalThis-qualified: a bare `caches` identifier would throw ReferenceError
-// at module evaluation in browsers without the Cache API, killing the worker.
-void globalThis.caches?.delete("nutrimatic-chunks-v1").catch(() => {});
+// Fully optional-chained: `caches` is absent over file:// (offline build) and
+// in browsers without the Cache API — a bare reference or an un-guarded
+// `.catch` would throw at module evaluation and kill the worker.
+void globalThis.caches?.delete("nutrimatic-chunks-v1")?.catch(() => {});
 
 // Macrotask yield that lets queued messages (stop/continue) be processed.
 // Deliberately NOT setTimeout: browsers clamp timers in background pages to
@@ -916,6 +928,32 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   }
 }
 
+/**
+ * Offline mode: open an index from a user-picked local File. Reads on demand
+ * with File.slice() (no server, no whole-file load), reusing the whole search
+ * pipeline. The JS engine handles it (no memBytes/diskSource set), which is
+ * exactly what we want with no network cost to avoid.
+ */
+async function openFile(file: Blob): Promise<void> {
+  const gen = ++openGen;
+  diskSource?.close();
+  diskSource = null;
+  rangeSource = null;
+  reader = null;
+  session = null;
+  memBytes = null;
+  wasmEngine = null;
+  currentUrl = null;
+  currentValidator = null;
+  currentSize = file.size;
+  const src = new FileRangeSource(file);
+  const r = await IndexReader.open(src);
+  if (gen !== openGen) return;
+  rangeSource = src;
+  reader = r;
+  postReady({ type: "ready", bytes: file.size, mode: "local", total: r.count() });
+}
+
 // In-flight explicit download, abortable via the "cancel-download" message.
 let downloadCtrl: AbortController | null = null;
 
@@ -1110,7 +1148,9 @@ async function runSession(
 
 class StopError extends Error {}
 
-onmessage = async (ev: MessageEvent<InMsg>) => {
+// self.onmessage (not bare onmessage): survives IIFE bundling for the inlined
+// offline worker, where an undeclared assignment would fail in strict mode.
+self.onmessage = async (ev: MessageEvent<InMsg>) => {
   const msg = ev.data;
   // Wake any parked runs: superseded ones re-check their token and unwind
   // promptly instead of lingering until some other run happens to yield.
@@ -1120,6 +1160,10 @@ onmessage = async (ev: MessageEvent<InMsg>) => {
       case "open":
         ++runToken;
         await openIndex(msg.url, msg.early);
+        break;
+      case "open-file":
+        ++runToken;
+        await openFile(msg.file);
         break;
       case "search": {
         if (!reader) throw new Error("no index loaded");

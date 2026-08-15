@@ -109,9 +109,25 @@ for (const [query, text] of EXAMPLES) {
   examplesEl.append(li);
 }
 
-const worker = new Worker(new URL("./worker.ts", import.meta.url), {
-  type: "module",
-});
+// OFFLINE is a build-time constant: false in the served Vite build, true in
+// the self-contained double-click build (scripts/build-offline.mjs). It gates
+// the file-picker path and the inlined-worker creation so the online build is
+// entirely unaffected.
+declare const OFFLINE: boolean;
+declare const __WORKER_CODE__: string; // injected by the offline generator
+
+let worker: Worker;
+if (OFFLINE) {
+  // file:// forbids fetching a worker script; run the inlined worker code
+  // from a Blob URL instead. Classic worker (the bundle is self-contained).
+  worker = new Worker(
+    URL.createObjectURL(new Blob([__WORKER_CODE__], { type: "text/javascript" })),
+  );
+} else {
+  worker = new Worker(new URL("./worker.ts", import.meta.url), {
+    type: "module",
+  });
+}
 // Without these, a worker that fails to boot (old browser, CSP, a stale
 // asset after a redeploy) leaves the page silently stuck on "loading".
 worker.onerror = (e) => {
@@ -123,6 +139,7 @@ worker.onmessageerror = () => {
 
 let indexReady = false;
 let indexMode: "memory" | "range" = "memory";
+let offlineName = ""; // picked index file name (offline mode)
 let pendingQuery: string | null = null;
 let downloading = false; // an explicit whole-index download is in flight
 let deviceCopy = false; // the loaded index is a device (OPFS) copy
@@ -177,7 +194,10 @@ function actionButton(label: string, onClick: () => void): HTMLButtonElement {
 function transliterate(query: string): string {
   // Decide from the file name, not a substring of the whole URL (a custom
   // URL merely containing "de-wiki" in its path must not get German rules).
-  const basename = new URL(indexUrl).pathname.split("/").pop() ?? "";
+  // Offline uses the picked file's name; online the index URL's basename.
+  const basename = OFFLINE
+    ? offlineName
+    : new URL(indexUrl).pathname.split("/").pop() ?? "";
   if (/^de[-_.]/.test(basename)) {
     return query
       .replace(/[äÄ]/g, "ae")
@@ -219,10 +239,13 @@ function tryHarder(): void {
   currentComp *= 2;
   // Reflect the raised budget in the URL like nutrimatic.org's ?comp=N, so
   // the "tried harder" state is shareable and reloadable. pushState (not
-  // replace) so Back returns to the lower budget.
-  const p = new URLSearchParams(location.search);
-  p.set("comp", String(currentComp));
-  history.pushState(null, "", `?${p}`);
+  // replace) so Back returns to the lower budget. Skipped offline: a file://
+  // URL isn't shareable and some browsers reject pushState on it.
+  if (!OFFLINE) {
+    const p = new URLSearchParams(location.search);
+    p.set("comp", String(currentComp));
+    history.pushState(null, "", `?${p}`);
+  }
   afterEl.textContent = "";
   setStatus("searching harder…");
   worker.postMessage({
@@ -270,7 +293,11 @@ worker.onmessage = (ev) => {
       } catch {
         // no localStorage (private mode): purely an optimization
       }
-      if (msg.mode === "disk") {
+      if (msg.mode === "local") {
+        // Offline: index read from the picked local file, no server.
+        indexInfo.textContent = `${offlineName} · ${fmtSize(msg.bytes)} (local file)`;
+        dlFull.hidden = true;
+      } else if (msg.mode === "disk") {
         indexInfo.textContent = `${fmtSize(msg.bytes)} on device storage`;
         dlFull.textContent = "remove device copy »";
         dlFull.disabled = false;
@@ -370,10 +397,14 @@ worker.onmessage = (ev) => {
 form.addEventListener("submit", (ev) => {
   ev.preventDefault();
   const query = qInput.value.trim();
-  const p = new URLSearchParams();
-  if (query) p.set("q", query);
-  if (params.get("index")) p.set("index", params.get("index")!);
-  history.pushState(null, "", query ? `?${p}` : location.pathname);
+  // Offline (file://): don't touch history — the URL isn't shareable and
+  // pushState can be rejected; just run the query.
+  if (!OFFLINE) {
+    const p = new URLSearchParams();
+    if (query) p.set("q", query);
+    if (params.get("index")) p.set("index", params.get("index")!);
+    history.pushState(null, "", query ? `?${p}` : location.pathname);
+  }
   applyQuery(query);
 });
 
@@ -459,5 +490,47 @@ async function postOpen(): Promise<void> {
   worker.postMessage({ type: "open", url: indexUrl });
 }
 
-void postOpen();
-applyQuery((params.get("q") || "").trim());
+/**
+ * Offline bootstrap: no network probe. Replace the index picker with a file
+ * chooser + drop target; opening a file hands it to the worker. Everything
+ * downstream (form, results, try-harder) is the shared online code.
+ */
+function setupOffline(): void {
+  // Reuse the index line: hide the URL picker, keep #indexinfo and #dlfull
+  // (the shared handlers reference them), insert a file chooser.
+  indexPick.hidden = true;
+  customRow.hidden = true;
+  const label = document.createElement("label");
+  label.style.marginRight = "0.5em";
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".index";
+  label.append("file: ", input);
+  indexPick.after(label);
+  indexInfo.textContent = "choose a .index file (or drop one anywhere)";
+
+  const openFile = (file: File): void => {
+    offlineName = file.name;
+    indexReady = false;
+    indexInfo.textContent = `opening ${file.name}…`;
+    worker.postMessage({ type: "open-file", file, name: file.name });
+  };
+  input.addEventListener("change", () => {
+    if (input.files && input.files[0]) openFile(input.files[0]);
+  });
+  // Drag-and-drop anywhere on the page.
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file) openFile(file);
+  });
+}
+
+if (OFFLINE) {
+  setupOffline();
+  applyQuery((params.get("q") || "").trim());
+} else {
+  void postOpen();
+  applyQuery((params.get("q") || "").trim());
+}
