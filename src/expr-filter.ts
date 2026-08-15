@@ -33,9 +33,10 @@ export class ExprFilter implements Filter {
   private readonly closures: Array<number[] | null>;
 
   constructor(parsedExpr: Nfa) {
-    // Trim to useful states first (linear): without this, states that can
-    // never reach acceptance survive (eager minimization used to drop them),
-    // and the search would wander them — including via endless restarts.
+    // Trim to useful states first (linear): eager minimization would drop
+    // states that can never reach acceptance, but this lazy engine does not,
+    // so without the trim the search wanders them — including via endless
+    // restarts.
     parsedExpr = trim(parsedExpr);
     if (parsedExpr.start === -1) {
       // Empty language: one non-accepting state with no transitions.
@@ -152,8 +153,9 @@ export class ProductFilter implements Filter {
   private trans = new Int32Array(0);
   private accepting: number[] = [];
   // Tuples in a flat pool (entry i at [i*width, (i+1)*width)); the hash
-  // table stores entry+1 in open-addressed slots. String-keyed Maps here
-  // profiled at ~23% of anagram search time (key building + boxed hashing).
+  // table stores entry+1 in open-addressed slots. A flat pool avoids the
+  // string-key building and boxed hashing that dominate anagram search time
+  // with a Map keyed by tuple.
   private pool = new Int32Array(0);
   private count = 0;
   private slots = new Int32Array(1 << 12); // power of two, 0 = empty

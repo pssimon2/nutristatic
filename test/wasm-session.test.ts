@@ -11,7 +11,7 @@ import { SearchSession } from "../src/search-session.js";
 import { WasmEngine, WasmSession } from "../src/wasm-session.js";
 
 const INDEX = "web/public/demo.index";
-const KERNEL = "wasm-proto/kernel2.wasm";
+const KERNEL = "wasm-kernel/kernel.wasm";
 const BUDGET = 200000;
 const MAX_RESULTS = 100;
 

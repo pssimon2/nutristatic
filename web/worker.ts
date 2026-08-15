@@ -17,7 +17,7 @@ import { IndexReader } from "../src/index-reader.js";
 import { ParseError } from "../src/find-expr.js";
 import { SearchSession } from "../src/search-session.js";
 import { WasmCapacityError, WasmEngine, WasmSession } from "../src/wasm-session.js";
-import kernelUrl from "../wasm-proto/kernel2.wasm?url";
+import kernelUrl from "../wasm-kernel/kernel.wasm?url";
 
 // Indexes up to this size are simply downloaded; everything bigger defaults
 // to Range mode (fetch only what a query touches) unless a full copy is
@@ -26,7 +26,8 @@ import kernelUrl from "../wasm-proto/kernel2.wasm?url";
 const TINY_LIMIT = 4 * 1024 * 1024;
 // Absolute ceiling for whole-index downloads: covers the 1.3GB Wikipedia
 // index — a one-time download into the browser cache buys memory-speed
-// searches (the heavy-anagram case drops from ~30s to under a second).
+// searches, so a heavy anagram that is slow to stream returns in well under
+// a second.
 const FULL_DOWNLOAD_LIMIT = 2 * 1024 * 1024 * 1024;
 // Full downloads happen in ranged pieces with per-piece retry, so a flaky
 // (especially mobile) connection doesn't restart the whole transfer. A few
@@ -72,8 +73,8 @@ async function fetchPieces(
   );
 }
 const CACHE_NAME = "nutrimatic-index-v1";
-// v2: chunk keys now include the chunk size — entries cached under a
-// different chunking must never be reinterpreted.
+// Chunk keys include the chunk size, so entries cached under a different
+// chunking are never reinterpreted.
 const CHUNK_CACHE_NAME = "nutrimatic-chunks-v2";
 const RANGE_CHUNK_SIZE = 1 << 15;
 // Range mode: prewarm this much of the file tail (trie root region), and
@@ -159,7 +160,7 @@ let currentUrl: string | null = null;
 let currentSize = 0;
 let currentValidator: string | null = null; // ETag/Last-Modified from probe
 
-// ---- WASM engine (kernel2) ----
+// ---- WASM engine ----
 // Used when the whole index is locally available: memory mode always, disk
 // (OPFS) mode up to this size — the kernel needs the index in linear memory,
 // so range mode (async fetches mid-search) stays on the JS engine. Any WASM

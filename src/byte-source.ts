@@ -91,9 +91,9 @@ export class SyncFileSource implements ByteSource {
     maxChunks?: number,
   ) {
     // Broad searches walk working sets in the hundreds of MB; a small LRU
-    // thrashes into per-node file reads (measured 20x slowdown). Users on
-    // this path explicitly downloaded the index, so scale the cache up to
-    // the full file, capped at 512MB.
+    // thrashes into per-node file reads, which is far slower. Users on this
+    // path explicitly downloaded the index, so scale the cache up to the full
+    // file, capped at 512MB.
     this.maxChunks =
       maxChunks ?? Math.min(4096, Math.ceil(length / this.chunkSize));
   }

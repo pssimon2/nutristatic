@@ -52,8 +52,8 @@ class FdReader implements SyncFileReader {
 
 /**
  * Open an index file as a chunk-cached ByteSource: multi-GB indexes are read
- * on demand instead of loaded whole (merge-indexes over dozens of shards
- * previously summed every input into RAM).
+ * on demand instead of loaded whole, so merge-indexes over dozens of shards
+ * never holds every input in RAM at once.
  */
 export function openIndexSource(
   path: string,

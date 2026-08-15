@@ -1,4 +1,4 @@
-// WASM search engine: drives wasm-proto/kernel2.wasm (the full lazy-filter
+// WASM search engine: drives wasm-kernel/kernel.wasm (the full lazy-filter
 // engine in freestanding C) behind the same interface as SearchSession, so
 // the worker can swap engines per search. The kernel needs the whole index
 // in linear memory, so it only serves fully-local indexes; callers fall back
@@ -215,7 +215,7 @@ export class WasmEngine {
     if (ex.seed(this.total) !== 0) throw new WasmCapacityError();
   }
 
-  /** Run up to `budget` steps; result codes as in kernel2.c's run(). */
+  /** Run up to `budget` steps; result codes as in kernel.c's run(). */
   step(budget: number): { code: number; steps: number; score: number; text: string } {
     const code = this.ex.run(budget);
     // Views are created per call: memory.grow() detaches old buffers.

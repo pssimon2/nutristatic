@@ -1,12 +1,14 @@
-// WASM kernel v2: the FULL engine — best-first walk plus the lazy filter
-// machinery (on-demand subset construction per conjunct NFA, lazy product
-// of conjuncts). This is what lets anagram/intersection queries run in the
-// kernel, which v1's dense-DFA requirement excluded.
+// WASM search kernel: the full engine — best-first walk plus the lazy filter
+// machinery (on-demand subset construction per conjunct NFA, lazy product of
+// conjuncts) — so anagram and intersection queries run in the kernel. Driven
+// by src/wasm-session.ts; the JS engine is the reference implementation and
+// the fallback.
 //
-// Build: clang --target=wasm32-unknown-unknown -O3 -nostdlib \
-//   -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined \
-//   -Wl,--initial-memory=17039360 -Wl,--max-memory=3221225472 \
-//   -o kernel2.wasm kernel2.c
+// Build (npm run build-wasm):
+//   clang --target=wasm32-unknown-unknown -O3 -nostdlib \
+//     -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined \
+//     -Wl,--initial-memory=17039360 -Wl,--max-memory=3221225472 \
+//     -o kernel.wasm kernel.c
 
 typedef unsigned char u8;
 typedef unsigned int u32;

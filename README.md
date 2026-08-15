@@ -8,7 +8,7 @@ documentation lives in the site's
 [usage guide](https://nutristatic.org/usage.html); this README covers the
 implementation. The pattern engine is TypeScript running in a Web Worker
 in the visitor's browser; the phrase-frequency index is a plain static file.
-(A WebAssembly port of the engine — `wasm-proto/kernel2.c` driven by
+(A WebAssembly port of the engine — `wasm-kernel/kernel.c` driven by
 `src/wasm-session.ts` — takes over automatically for fully-local indexes,
 worth 1.2–1.3x on heavy anagrams; the JS engine remains the reference
 implementation, the fallback, and the range-mode engine.)
@@ -112,12 +112,17 @@ every bundled index** — all 13 Wikipedias (1.3 GB English down to 88 MB
 Turkish), Simple English, and the web-words demo, each probed with a
 native-language query (`scripts/prod-matrix.mjs` for the full table).
 
-Constrained networks (CDP emulation, English index, cold):
+Constrained networks (CDP emulation, English index, cold), first result on
+screen:
 
-| Profile | First result | Full 150k-step page |
-|---|---|---|
-| 2 Mbps / 150 ms RTT | 13.2 s | 327 s |
-| 8 Mbps / 300 ms RTT | 4.9 s | 89 s |
+| Profile | First result |
+|---|---|
+| 2 Mbps / 150 ms RTT | 13.2 s |
+| 8 Mbps / 300 ms RTT | 4.9 s |
+
+A search that would stream a large slice of the index over the network stops
+at a bytes/time budget (~32 MB or ~20 s) and offers to download the index for
+instant local searching.
 
 Heavy anagram (`<aciimnrttu>`, English index): ~5 s cold range mode,
 ~2 s from a device-stored (OPFS) copy including page load, 0.1 s warm
