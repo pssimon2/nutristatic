@@ -11,8 +11,11 @@ build-cpp/
 upstream/
 
 # Generated index artifacts served by the web app (rebuild via npm scripts)
+# The big Wikipedia indexes are downloaded/built, not committed — except the
+# small demo index, which the dev server and the test suite depend on.
 web/public/*.index
 web/public/*.idxz
+!web/public/demo.index
 
 *.log
 

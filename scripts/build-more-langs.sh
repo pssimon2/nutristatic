@@ -4,7 +4,8 @@
 # builds never compete for cores; a separate chain downloads the dumps.
 # Meant to run detached (nohup); logs to latin-langs2.log.
 set -u
-cd ./data
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd $ROOT/data
 MAIN_LOG=latin-langs2.log
 log() { echo "$(date '+%F %T') $*" >> "$MAIN_LOG"; }
 
@@ -17,7 +18,7 @@ declare -A EXPECTED=(
   [id]=1232894346
   [tr]=1048837152
 )
-FILTER="sed -f ./tools/latin-fold.sed"
+FILTER="sed -f $ROOT/tools/latin-fold.sed"
 
 log "waiting for first-wave builds to finish"
 while ! grep -q "ALL DONE" latin-langs.log 2>/dev/null; do sleep 60; done
@@ -34,22 +35,26 @@ for lang in pt pl cs sv ca id tr; do
   log "$dump complete; building"
 
   if ! NAME="${lang}wiki" LOG="${lang}wiki-build.log" WORKERS=14 NICE='nice -n 5' \
-       DATA_DIR=./data \
-       bash ./scripts/build-wiki-par.sh "${lang}wiki" "$dump" "$out" "$FILTER"; then
+       DATA_DIR=$ROOT/data \
+       bash $ROOT/scripts/build-wiki-par.sh "${lang}wiki" "$dump" "$out" "$FILTER"; then
     log "ERROR: $lang build failed (see ${lang}wiki-build.log)"
     continue
   fi
   log "$lang index built: $(du -h "$out" | cut -f1)"
 
-  if ! npx tsx ./cli/compress-index.ts "$out" 2>>"$MAIN_LOG"; then
+  if ! npx tsx $ROOT/cli/compress-index.ts "$out" 2>>"$MAIN_LOG"; then
     log "ERROR: $lang sidecar build failed"
     continue
   fi
 
+  if [ -z "${NUTRISTATIC_DEPLOY:-}" ]; then
+    log "$lang built (set NUTRISTATIC_DEPLOY=user@host:/path to auto-upload)"
+    continue
+  fi
   if rsync -a --partial --inplace "$out" \
-       "simon@example.com:/srv/nutristatic/${lang}-wiki.index" &&
+       "$NUTRISTATIC_DEPLOY/${lang}-wiki.index" &&
      rsync -a --partial --inplace "$out.idxz" \
-       "simon@example.com:/srv/nutristatic/${lang}-wiki.index.idxz"; then
+       "$NUTRISTATIC_DEPLOY/${lang}-wiki.index.idxz"; then
     log "SUCCESS: $lang uploaded ($(du -h "$out" | cut -f1) + sidecar)"
   else
     log "ERROR: $lang upload failed"

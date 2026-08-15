@@ -13,13 +13,14 @@
 # Rolling merges: completed 1M-chain chunks merge in >=50 batches (cutoff 2),
 # raw chunks deleted as they go; final merge uses cutoff 5.
 # Paths are overridable so the same script runs locally and on the server:
-#   DATA_DIR  working directory (default ./data)
-#   BIN       directory with the compiled tools (default ./build-cpp)
+#   DATA_DIR  working directory (default <repo>/data)
+#   BIN       directory with the compiled tools (default <repo>/build-cpp)
 #   NICE      command prefix for the heavy processes (e.g. "nice -n 19 ionice -c3")
 set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME=$1; DUMP=$2; OUT=$3; FILTER=${4:-cat}
-DATA_DIR=${DATA_DIR:-./data}
-BIN=${BIN:-./build-cpp}
+DATA_DIR=${DATA_DIR:-$ROOT/data}
+BIN=${BIN:-$ROOT/build-cpp}
 NICE=${NICE:-}
 cd "$DATA_DIR"
 LOG=${NAME}-build.log

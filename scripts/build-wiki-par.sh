@@ -9,9 +9,10 @@
 # env: DATA_DIR, BIN, NICE, MIN_FREE_GB, WORKERS (default 12), LOG
 #      FILTER must not contain a '%' character (worker cmd is a printf fmt).
 set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME=$1; DUMP=$2; OUT=$3; FILTER=${4:-}
-DATA_DIR=${DATA_DIR:-./data}
-BIN=${BIN:-./build-cpp}
+DATA_DIR=${DATA_DIR:-$ROOT/data}
+BIN=${BIN:-$ROOT/build-cpp}
 NICE=${NICE:-}
 WORKERS=${WORKERS:-12}
 cd "$DATA_DIR"

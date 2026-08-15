@@ -1,0 +1,6 @@
+# Crawlers are welcome on the site, but the index files are large (up to
+# 1.3 GB each) and pointless to crawl — keep them out to save bandwidth.
+User-agent: *
+Allow: /
+Disallow: /*.index$
+Disallow: /*.idxz$
