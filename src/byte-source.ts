@@ -32,6 +32,17 @@ export interface ByteSource {
   prefetchHint?(start: number, end: number): void;
 }
 
+/**
+ * Cache validator for a served file: ETag + Last-Modified combined. Null when
+ * the server provides neither (validation impossible, callers fall back to
+ * size-only checks). Used to catch same-size index rebuilds.
+ */
+export function validatorOf(headers: Headers): string | null {
+  const etag = headers.get("etag");
+  const modified = headers.get("last-modified");
+  return etag || modified ? `${etag ?? ""}|${modified ?? ""}` : null;
+}
+
 /** Await only if needed, keeping the common cached case synchronous. */
 export function maybeAsync<T>(
   prep: void | Promise<void>,
@@ -130,6 +141,19 @@ export class SyncFileSource implements ByteSource {
     return true;
   }
 
+  /**
+   * Bulk-read [at, at + target.length) directly into `target`, bypassing the
+   * chunk LRU (used to copy a whole index into WASM linear memory).
+   */
+  readInto(target: Uint8Array, at: number): void {
+    let got = 0;
+    while (got < target.length) {
+      const n = this.file.read(target.subarray(got), { at: at + got });
+      if (n <= 0) throw new Error(`short read at ${at + got}`);
+      got += n;
+    }
+  }
+
   /** Release the underlying file handle (its lock blocks other openers). */
   close(): void {
     try {
@@ -178,6 +202,8 @@ export class HttpRangeSource implements ByteSource {
   private ewmaRtt = 0.08;
   /** Whether the probe confirmed the server honors Range requests. */
   supportsRanges = false;
+  /** ETag/Last-Modified captured by the probe; null when unknown. */
+  validator: string | null = null;
 
   private constructor(
     private readonly url: string,
@@ -224,6 +250,7 @@ export class HttpRangeSource implements ByteSource {
       length = parseInt(len, 10);
     }
     await probe.body?.cancel();
+    const validator = validatorOf(probe.headers);
     const source = new HttpRangeSource(
       url,
       length,
@@ -233,6 +260,7 @@ export class HttpRangeSource implements ByteSource {
       opts.chunkStore,
     );
     source.supportsRanges = supportsRanges;
+    source.validator = validator;
     return source;
   }
 
@@ -339,7 +367,10 @@ export class HttpRangeSource implements ByteSource {
   }
 
   private insertChunk(c: number, data: Uint8Array, persist: boolean): void {
-    this.cache.set(c, data);
+    // Copy: `data` is often a subarray of a large multi-chunk fetch buffer,
+    // and storing the view would pin the whole buffer for the chunk's
+    // lifetime in the LRU.
+    this.cache.set(c, data.slice());
     if (persist) this.chunkStore?.put(c, data);
   }
 

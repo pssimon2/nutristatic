@@ -2,12 +2,10 @@
 // cutoff. usage: merge-indexes min input.index ... out.index
 
 import * as fs from "node:fs";
-import { MemorySource } from "../src/byte-source.js";
-import { IndexReader } from "../src/index-reader.js";
 import { IndexWalker } from "../src/index-walker.js";
 import { IndexWriter } from "../src/index-writer.js";
 import { mergeWalkers } from "../src/merge.js";
-import { FileSink } from "../src/node-io.js";
+import { cliOpenIndex, FileSink } from "../src/node-io.js";
 
 const args = process.argv.slice(2);
 if (args.length < 3) {
@@ -15,11 +13,13 @@ if (args.length < 3) {
   process.exit(2);
 }
 
-const cutoff = parseInt(args[0], 10);
-if (!(cutoff > 0)) {
+// Strict digits only: upstream's atoi would turn "1e9" into cutoff 1 and
+// silently merge with the wrong threshold.
+if (!/^\d+$/.test(args[0]) || parseInt(args[0], 10) <= 0) {
   console.error(`error: illegal frequency threshold "${args[0]}"`);
   process.exit(2);
 }
+const cutoff = parseInt(args[0], 10);
 
 const outPath = args[args.length - 1];
 if (fs.existsSync(outPath)) {
@@ -29,9 +29,9 @@ if (fs.existsSync(outPath)) {
 
 const walkers = [];
 for (const path of args.slice(1, -1)) {
-  const reader = await IndexReader.open(
-    new MemorySource(fs.readFileSync(path)),
-  );
+  // Chunk-cached source: dozens of multi-hundred-MB shards must not be
+  // summed into RAM (128MB LRU per input).
+  const reader = await cliOpenIndex(path, 1024);
   const walker = await IndexWalker.create(reader, reader.root(), reader.count());
   if (walker.text === null) {
     console.error(`warning: empty input "${path}"`);
@@ -40,6 +40,38 @@ for (const path of args.slice(1, -1)) {
   }
 }
 
-const sink = new FileSink(outPath);
-await mergeWalkers(walkers, cutoff, new IndexWriter(sink));
-sink.close();
+let sink: FileSink;
+try {
+  sink = new FileSink(outPath, { exclusive: true });
+} catch (e) {
+  if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+    console.error(`error: output "${outPath}" already exists`);
+  } else {
+    console.error(`error: can't write "${outPath}"`);
+  }
+  process.exit(1);
+}
+try {
+  await mergeWalkers(walkers, cutoff, new IndexWriter(sink));
+  sink.close();
+} catch (e) {
+  // Never leave a partial output behind: it would block the retry with
+  // `output "..." already exists`.
+  try {
+    sink.close();
+  } catch {
+    // already closed
+  }
+  try {
+    fs.unlinkSync(outPath);
+  } catch {
+    // best-effort cleanup
+  }
+  if (e instanceof Error && e.message === "empty leaf") {
+    console.error(
+      `error: no phrases meet the frequency cutoff (${cutoff}); no index written`,
+    );
+    process.exit(1);
+  }
+  throw e;
+}

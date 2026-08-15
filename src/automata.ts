@@ -352,7 +352,9 @@ export function minimize(dfa: Dfa): Dfa {
   const classOf = blockOf;
   const numClasses = bStart.length;
   const deadClass = classOf[dead];
-  if (classOf[dfa.start] === deadClass && !dfa.accepting[dfa.start]) {
+  // (Accepting states can never share the dead class: the initial partition
+  // separates them.)
+  if (classOf[dfa.start] === deadClass) {
     return EMPTY_DFA;
   }
 

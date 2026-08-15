@@ -57,6 +57,12 @@ export class IndexWalker {
       }
       const parent = this.stack[this.stackSize - 2];
       const child = this.stack[this.stackSize - 1];
+      if (parent.next >= parent.choices.length) {
+        // Only reachable via a malformed/truncated index (a node with zero
+        // children and zero terminal count): report it as an index error
+        // instead of a TypeError on undefined.
+        throw new Error("index error: node with no children and no count");
+      }
       const choice = parent.choices[parent.next++];
 
       child.next = 0;
@@ -70,6 +76,14 @@ export class IndexWalker {
       this.buf[this.stackSize - 2] = choice.ch;
     } while (this.count === 0);
 
-    this.text = String.fromCharCode(...this.buf.slice(0, this.stackSize - 1));
+    // Chunked: spreading one argument per character overflows the call
+    // stack for very deep tries (wordlist or external indexes have no
+    // 40-char cap).
+    const n = this.stackSize - 1;
+    let text = "";
+    for (let i = 0; i < n; i += 4096) {
+      text += String.fromCharCode(...this.buf.slice(i, Math.min(i + 4096, n)));
+    }
+    this.text = text;
   }
 }

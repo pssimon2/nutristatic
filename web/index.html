@@ -15,22 +15,38 @@
         url: url,
         probe: fetch(url, { headers: { Range: "bytes=0-0" } })
           .then(function (r) {
+            // Headers are all we need: cancel the body so a host that
+            // ignores Range doesn't stream the whole index into the page.
+            try { if (r.body) r.body.cancel(); } catch (e) { /* locked */ }
             return {
               ok: r.ok,
               status: r.status,
               contentRange: r.headers.get("content-range"),
               contentLength: r.headers.get("content-length"),
+              etag: r.headers.get("etag"),
+              lastModified: r.headers.get("last-modified"),
             };
           })
           .catch(function () { return null; }),
         table: (async function () {
+          try {
+            // A device (OPFS) copy makes the sidecar table useless: skip
+            // the 128KB fetch. The flag is set by the app on disk-mode load.
+            if (localStorage.getItem("nutristatic-disk:" + url)) return null;
+          } catch (e) { /* no localStorage: fetch anyway */ }
           try {
             var cache = await caches.open("nutrimatic-chunks-v2");
             if (await cache.match(url + "?nutrimatic-idxz-table")) return null;
           } catch (e) { /* no cache API: fetch anyway */ }
           try {
             var r = await fetch(url + ".idxz", { headers: { Range: "bytes=0-131071" } });
-            return r.ok ? await r.arrayBuffer() : null;
+            // 206 only: a 200 means Range was ignored and the body would be
+            // the entire sidecar.
+            if (!r.ok || r.status !== 206) {
+              try { if (r.body) r.body.cancel(); } catch (e) { /* locked */ }
+              return null;
+            }
+            return await r.arrayBuffer();
           } catch (e) { return null; }
         })(),
       };
@@ -39,14 +55,19 @@
   <link rel="icon" type="image/vnd.microsoft.icon" href="./favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    /* Follow the OS theme: default UA colors handle text/background/inputs,
+       we only pick theme-aware tones for our own accents. */
+    :root { color-scheme: light dark; }
     /* Left-aligned like nutrimatic.org, not a centered column. */
     body { margin: 1em; }
     form { margin: 0.5em 0; }
     #results span { line-height: 1.15; }
-    #status { color: #555; }
-    #status.error { color: red; font-weight: bold; }
-    #indexline { font-size: 0.8em; color: #777; margin-top: 2em; }
+    #status { color: #767676; }
+    #status.error { color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
+    #indexline { font-size: 0.8em; color: #767676; margin-top: 2em; }
     #indexline input { width: 24em; }
+    /* Never force horizontal scrolling on narrow screens. */
+    input, select, button { max-width: 100%; box-sizing: border-box; }
     em.tagline { display: block; margin: 0.5em 0; }
     button.linkish { margin-left: 0.5em; }
   </style>
@@ -57,7 +78,8 @@
 
   <form id="form" action="" method="get">
     <input type="search" id="q" name="q" size="45" autocomplete="off"
-           autocorrect="off" autocapitalize="off" spellcheck="false">
+           autocorrect="off" autocapitalize="off" spellcheck="false"
+           aria-label="search pattern">
     <input type="submit" value="Go">
   </form>
 
@@ -100,9 +122,9 @@
   </div>
 
   <div id="resultsview" hidden>
-    <p id="status"></p>
+    <p id="status" role="status" aria-live="polite"></p>
     <div id="results"></div>
-    <p id="after"></p>
+    <p id="after" aria-live="polite"></p>
   </div>
 
   <p id="indexline">

@@ -172,7 +172,10 @@ export class IndexWriter {
       this.pos += 17 * choices.length;
     }
 
-    if (choices.length > 0x100) throw new Error("too many choices");
+    // >= not >: a count byte of exactly 0x100 would wrap to 0, which the
+    // reader parses as "count follows" (upstream's assert shares the
+    // off-by-one; the format truly maxes out at 255 children).
+    if (choices.length >= 0x100) throw new Error("too many choices");
     if (choices.length < 0x20) {
       this.sink.put(choices.length + mode);
       this.pos += 1;

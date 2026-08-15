@@ -29,6 +29,18 @@ __attribute__((export_name("walloc"))) u32 walloc(u32 n) {
   return p;
 }
 
+// Bump-allocator checkpointing: the host marks the heap after the one-time
+// setup and resets to that mark before each query, so per-query tables are
+// reused instead of leaking (walloc never frees).
+__attribute__((export_name("heap_mark"))) u32 heap_mark(void) {
+  if (heap_top == 0) heap_top = (u32)&__heap_base;
+  return heap_top;
+}
+
+__attribute__((export_name("heap_reset"))) void heap_reset(u32 mark) {
+  heap_top = mark;
+}
+
 // ---- index + alphabet ----
 static u8 *idx;
 static u32 idx_len, root;

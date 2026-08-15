@@ -10,11 +10,13 @@ import {
   SyncFileReader,
   SyncFileSource,
 } from "../src/byte-source.js";
-import { CompressedRangeSource } from "../src/compressed-source.js";
-import { inflateRawBlock, parseIdxzHeader, parseIdxzTable } from "../src/idxz.js";
+import { CompressedRangeSource, fetchIdxzPrefix } from "../src/compressed-source.js";
+import { inflateRawBlock } from "../src/idxz.js";
 import { IndexReader } from "../src/index-reader.js";
 import { ParseError } from "../src/find-expr.js";
 import { SearchSession } from "../src/search-session.js";
+import { WasmCapacityError, WasmEngine, WasmSession } from "../src/wasm-session.js";
+import kernelUrl from "../wasm-proto/kernel2.wasm?url";
 
 // Indexes up to this size are simply downloaded; everything bigger defaults
 // to Range mode (fetch only what a query touches) unless a full copy is
@@ -40,6 +42,7 @@ async function fetchPieces(
   url: string,
   size: number,
   write: (part: Uint8Array, offset: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   let nextOffset = 0;
   let loaded = 0;
@@ -49,10 +52,12 @@ async function fetchPieces(
       if (off >= size) return;
       nextOffset += DOWNLOAD_PIECE;
       const end = Math.min(off + DOWNLOAD_PIECE, size) - 1;
-      const resp = await fetchWithRetry(url, {
-        headers: { Range: `bytes=${off}-${end}` },
-      });
-      const part = new Uint8Array(await resp.arrayBuffer());
+      const part = await fetchBytesWithRetry(
+        url,
+        { headers: { Range: `bytes=${off}-${end}` }, signal },
+        4,
+        PIECE_TIMEOUT,
+      );
       if (part.length !== end - off + 1) {
         throw new Error(`short range response (${part.length} bytes at ${off})`);
       }
@@ -84,6 +89,8 @@ interface EarlyProbe {
   status: number;
   contentRange: string | null;
   contentLength: string | null;
+  etag?: string | null;
+  lastModified?: string | null;
 }
 
 interface OpenMsg {
@@ -111,50 +118,189 @@ interface StopMsg {
 interface DownloadFullMsg {
   type: "download-full";
 }
-type InMsg = OpenMsg | SearchMsg | ContinueMsg | StopMsg | DownloadFullMsg;
+interface CancelDownloadMsg {
+  type: "cancel-download";
+}
+interface RemoveCopyMsg {
+  type: "remove-copy";
+}
+type InMsg =
+  | OpenMsg
+  | SearchMsg
+  | ContinueMsg
+  | StopMsg
+  | DownloadFullMsg
+  | CancelDownloadMsg
+  | RemoveCopyMsg;
 
 let reader: IndexReader | null = null;
 let rangeSource: HttpRangeSource | CompressedRangeSource | null = null;
 let diskSource: SyncFileSource | null = null;
-let session: SearchSession | null = null;
+let session: SearchSession | WasmSession | null = null;
 let runToken = 0; // bumped to cancel an in-flight run
 let currentUrl: string | null = null;
 let currentSize = 0;
+let currentValidator: string | null = null; // ETag/Last-Modified from probe
+
+// ---- WASM engine (kernel2) ----
+// Used when the whole index is locally available: memory mode always, disk
+// (OPFS) mode up to this size — the kernel needs the index in linear memory,
+// so range mode (async fetches mid-search) stays on the JS engine. Any WASM
+// failure falls back to JS; both engines emit identical score-streams.
+const WASM_INDEX_LIMIT = 800 * 1024 * 1024;
+let wasmModule: Promise<WebAssembly.Module> | null = null;
+// Single-flight per index: a second search racing the first engine creation
+// must await the SAME instance, not build a second full index copy.
+let wasmEngine: Promise<WasmEngine> | null = null;
+let wasmBroken = false; // this environment can't run the kernel: stop trying
+let memBytes: Uint8Array | null = null; // index bytes when in memory mode
+let currentQuery: string | null = null;
+let emitted = new Set<string>(); // texts posted for the current query
+
+function getWasmModule(): Promise<WebAssembly.Module> {
+  // fetch + compile (not instantiateStreaming): no reliance on the server
+  // sending application/wasm.
+  wasmModule ??= fetch(kernelUrl)
+    .then((r) => {
+      if (!r.ok) throw new Error(`kernel fetch: HTTP ${r.status}`);
+      return r.arrayBuffer();
+    })
+    .then((b) => WebAssembly.compile(b));
+  return wasmModule;
+}
+
+function getWasmEngine(): Promise<WasmEngine> {
+  if (wasmEngine) return wasmEngine;
+  const p: Promise<WasmEngine> = (async () => {
+    const module = await getWasmModule();
+    const total = reader!.count();
+    if (memBytes) {
+      const data = memBytes;
+      return WasmEngine.create(module, data.length, total, (t) => t.set(data));
+    }
+    if (diskSource) {
+      const disk = diskSource;
+      return WasmEngine.create(module, currentSize, total, (t) => {
+        const SLICE = 8 * 1024 * 1024;
+        for (let off = 0; off < t.length; off += SLICE) {
+          disk.readInto(t.subarray(off, Math.min(off + SLICE, t.length)), off);
+        }
+      });
+    }
+    throw new Error("index not fully local");
+  })().catch((e) => {
+    // Un-cache the failure — but only if a newer open hasn't already
+    // replaced the slot with its own in-flight creation.
+    if (wasmEngine === p) wasmEngine = null;
+    throw e;
+  });
+  wasmEngine = p;
+  return p;
+}
 
 const post = (msg: unknown) => postMessage(msg);
+
+// Last "ready" payload: re-posted to restore the UI when an explicit
+// download fails but the previously loaded index is still usable.
+let lastReady: unknown = null;
+const postReady = (msg: unknown) => {
+  lastReady = msg;
+  post(msg);
+};
+
+// Reclaim storage from obsolete cache versions (best-effort, async).
+// globalThis-qualified: a bare `caches` identifier would throw ReferenceError
+// at module evaluation in browsers without the Cache API, killing the worker.
+void globalThis.caches?.delete("nutrimatic-chunks-v1").catch(() => {});
 
 // Macrotask yield that lets queued messages (stop/continue) be processed.
 // Deliberately NOT setTimeout: browsers clamp timers in background pages to
 // ~1s, which turned a 1M-step search into ~50 seconds of sleeping when the
 // tab wasn't focused. MessageChannel posts are never throttled.
 const yieldChannel = new MessageChannel();
-let yieldResolve: (() => void) | null = null;
+// A Set, not a single slot: two runs can be parked at once (a superseded run
+// awaiting its yield while its successor starts). Waking ALL of them lets a
+// stale run reach its token check and unwind (releasing runsActive) instead
+// of staying suspended forever.
+const yieldResolvers = new Set<() => void>();
 yieldChannel.port1.onmessage = () => {
-  const r = yieldResolve;
-  yieldResolve = null;
-  r?.();
+  const pending = [...yieldResolvers];
+  yieldResolvers.clear();
+  for (const r of pending) r();
 };
 function macroYield(): Promise<void> {
   return new Promise((resolve) => {
-    yieldResolve = resolve;
+    yieldResolvers.add(resolve);
     yieldChannel.port2.postMessage(0);
   });
 }
+
+// Per-attempt watchdog: a stalled connection must fail into the retry loop
+// instead of hanging the UI forever. Generous — this is a stall detector,
+// not a latency budget (a 4MB piece on slow mobile can legitimately take
+// minutes).
+const FETCH_TIMEOUT = 60_000;
+const PIECE_TIMEOUT = 300_000;
 
 async function fetchWithRetry(
   url: string,
   init?: RequestInit,
   attempts = 4,
+  timeoutMs = FETCH_TIMEOUT,
 ): Promise<Response> {
+  const r = await retryLoop(url, init, attempts, timeoutMs, (resp) =>
+    Promise.resolve(resp),
+  );
+  return r;
+}
+
+/**
+ * Like fetchWithRetry but reads the whole body while the watchdog and the
+ * cancel relay are still armed — the headers arriving says nothing about the
+ * body not stalling, and the body is where the transfer time is. Bulk (piece)
+ * downloads must use this so "cancel" interrupts them mid-body.
+ */
+async function fetchBytesWithRetry(
+  url: string,
+  init?: RequestInit,
+  attempts = 4,
+  timeoutMs = FETCH_TIMEOUT,
+): Promise<Uint8Array> {
+  return retryLoop(
+    url,
+    init,
+    attempts,
+    timeoutMs,
+    async (resp) => new Uint8Array(await resp.arrayBuffer()),
+  );
+}
+
+async function retryLoop<T>(
+  url: string,
+  init: RequestInit | undefined,
+  attempts: number,
+  timeoutMs: number,
+  consume: (resp: Response) => Promise<T>,
+): Promise<T> {
+  const outer = init?.signal ?? null;
   let lastErr: unknown;
   for (let i = 0; i < attempts; ++i) {
+    if (outer?.aborted) throw new StopError("download cancelled");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const onOuterAbort = () => ctrl.abort();
+    outer?.addEventListener("abort", onOuterAbort);
     try {
-      const resp = await fetch(url, init);
-      if (resp.ok) return resp;
+      const resp = await fetch(url, { ...init, signal: ctrl.signal });
+      if (resp.ok) return await consume(resp);
       lastErr = new Error(`HTTP ${resp.status}`);
       if (resp.status >= 400 && resp.status < 500) break; // no point retrying
     } catch (e) {
+      if (outer?.aborted) throw new StopError("download cancelled");
       lastErr = e;
+    } finally {
+      clearTimeout(timer);
+      outer?.removeEventListener("abort", onOuterAbort);
     }
     await new Promise((r) => setTimeout(r, 700 * (i + 1)));
   }
@@ -178,6 +324,67 @@ function opfsName(url: string): string {
   return "idx-" + encodeURIComponent(url);
 }
 
+// Completion sentinel: pieces are written concurrently at absolute offsets,
+// so an interrupted download can leave a full-size file with zeroed holes
+// that a size check alone would accept. The marker (containing the size) is
+// written only after every piece has landed and been flushed.
+function opfsOkName(url: string): string {
+  return opfsName(url) + ".ok";
+}
+
+interface OpfsMarker {
+  size: number;
+  validator: string | null;
+}
+
+/** Parse a marker file: JSON {size, validator}, or the legacy bare size. */
+function parseOpfsMarker(text: string | null): OpfsMarker | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "number") return { size: parsed, validator: null };
+    if (parsed && typeof parsed.size === "number") {
+      return { size: parsed.size, validator: parsed.validator ?? null };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function opfsReadMarker(url: string): Promise<string | null> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle(opfsOkName(url));
+    return await (await handle.getFile()).text();
+  } catch {
+    return null;
+  }
+}
+
+async function opfsWriteMarker(url: string, content: string): Promise<void> {
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle(opfsOkName(url), { create: true });
+  const sync = await (handle as any).createSyncAccessHandle();
+  try {
+    sync.truncate(0);
+    sync.write(new TextEncoder().encode(content), { at: 0 });
+    sync.flush();
+  } finally {
+    sync.close();
+  }
+}
+
+async function opfsRemove(url: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(opfsName(url)).catch(() => {});
+    await root.removeEntry(opfsOkName(url)).catch(() => {});
+  } catch {
+    // OPFS unavailable
+  }
+}
+
 async function opfsHandle(
   url: string,
   create: boolean,
@@ -199,10 +406,16 @@ async function openOpfsIndex(
   if (!handle) return null;
   try {
     const file = await handle.getFile();
-    if (file.size !== expectedSize) {
-      // Stale copy (index replaced on the server): drop it.
-      const root = await navigator.storage.getDirectory();
-      await root.removeEntry(opfsName(url));
+    const marker = parseOpfsMarker(await opfsReadMarker(url));
+    const validatorStale =
+      marker?.validator != null &&
+      currentValidator != null &&
+      marker.validator !== currentValidator;
+    if (file.size !== expectedSize || marker?.size !== expectedSize || validatorStale) {
+      // Stale copy (the index was replaced on the server — caught by size,
+      // or by ETag/Last-Modified when the rebuild kept the same size) or an
+      // interrupted download that never wrote its completion marker.
+      await opfsRemove(url);
       return null;
     }
     // The previous page's worker may not have released its lock yet right
@@ -225,6 +438,7 @@ async function openOpfsIndex(
 async function downloadToOpfs(
   url: string,
   size: number,
+  signal?: AbortSignal,
 ): Promise<SyncFileSource | null> {
   const handle = await opfsHandle(url, true);
   if (!handle) return null;
@@ -235,20 +449,39 @@ async function downloadToOpfs(
     return null;
   }
   try {
+    // Invalidate any previous completion marker before touching the file
+    // (the file itself stays: we hold its open handle).
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(opfsOkName(url)).catch(() => {});
+    } catch {
+      // OPFS unavailable
+    }
     sync.truncate(0);
-    const viaZ = await downloadViaSidecar(url, size, (part, off) =>
-      sync.write(part, { at: off }),
+    const viaZ = await downloadViaSidecar(
+      url,
+      size,
+      (part, off) => sync.write(part, { at: off }),
+      signal,
     );
     if (!viaZ) {
-      await fetchPieces(url, size, (part, off) => sync.write(part, { at: off }));
+      await fetchPieces(
+        url,
+        size,
+        (part, off) => sync.write(part, { at: off }),
+        signal,
+      );
     }
     sync.flush();
+    await opfsWriteMarker(
+      url,
+      JSON.stringify({ size, validator: currentValidator }),
+    );
     return new SyncFileSource(sync as SyncFileReader, size);
   } catch (e) {
     try {
       sync.close();
-      const root = await navigator.storage.getDirectory();
-      await root.removeEntry(opfsName(url));
+      await opfsRemove(url);
     } catch {
       // best-effort cleanup
     }
@@ -295,30 +528,16 @@ async function downloadViaSidecar(
   url: string,
   size: number,
   write: (part: Uint8Array, offset: number) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const sidecarUrl = url + ".idxz";
   try {
-    const headResp = await fetchWithRetry(sidecarUrl, {
-      headers: { Range: "bytes=0-65535" },
-    });
-    let buf = new Uint8Array(await headResp.arrayBuffer());
-    const header = parseIdxzHeader(buf);
-    if (!header || header.uncompressedSize !== size) return false;
-    if (buf.length < header.dataStart) {
-      const rest = await fetchWithRetry(sidecarUrl, {
-        headers: { Range: `bytes=${buf.length}-${header.dataStart - 1}` },
-      });
-      const more = new Uint8Array(await rest.arrayBuffer());
-      const joined = new Uint8Array(header.dataStart);
-      joined.set(buf);
-      joined.set(more, buf.length);
-      buf = joined;
-    }
-    const table = await parseIdxzTable(
-      buf.subarray(24, header.dataStart),
-      header.numBlocks,
-    );
-    if (!table) return false;
+    // Shared with CompressedRangeSource.open: fetch + validate header/table.
+    const pre = await fetchIdxzPrefix(sidecarUrl, size, ((input, init) =>
+      fetchWithRetry(String(input), { ...init, signal })) as typeof fetch);
+    if (signal?.aborted) throw new StopError("download cancelled");
+    if (!pre) return false;
+    const { header, table } = pre;
 
     // Group blocks into ~piece-sized compressed spans.
     const spans: Array<[number, number]> = [];
@@ -340,19 +559,23 @@ async function downloadViaSidecar(
         const [s, e] = spans[idx];
         const from = header.dataStart + table[s];
         const to = header.dataStart + table[e] - 1;
-        const resp = await fetchWithRetry(sidecarUrl, {
-          headers: { Range: `bytes=${from}-${to}` },
-        });
-        const buf = new Uint8Array(await resp.arrayBuffer());
+        const buf = await fetchBytesWithRetry(
+          sidecarUrl,
+          { headers: { Range: `bytes=${from}-${to}` }, signal },
+          4,
+          PIECE_TIMEOUT,
+        );
         if (buf.length !== to - from + 1) throw new Error("idxz short span");
         const jobs: Promise<void>[] = [];
         for (let b = s; b < e; ++b) {
           const off = table[b] - table[s];
           const len = table[b + 1] - table[b];
           jobs.push(
-            inflateRawBlock(buf.subarray(off, off + len)).then((data) => {
+            inflateRawBlock(buf.subarray(off, off + len), header.blockSize).then((data) => {
               const expected = Math.min(header.blockSize, size - b * header.blockSize);
-              if (data.length !== expected) throw new Error(`idxz bad block ${b}`);
+              if (data === null || data.length !== expected) {
+                throw new Error(`idxz bad block ${b}`);
+              }
               write(data, b * header.blockSize);
             }),
           );
@@ -366,7 +589,10 @@ async function downloadViaSidecar(
       Array.from({ length: DOWNLOAD_CONCURRENCY }, () => runner()),
     );
     return true;
-  } catch {
+  } catch (e) {
+    // A cancel must propagate; only genuine sidecar trouble falls back to
+    // plain ranges.
+    if (signal?.aborted) throw e;
     return false;
   }
 }
@@ -375,11 +601,14 @@ async function downloadWhole(
   url: string,
   size: number,
   ranged: boolean,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const cache = await openCache();
   if (cache) {
     const hit = await cache.match(url);
-    if (hit) {
+    if (hit && cachedCopyStale(hit)) {
+      await cache.delete(url); // same-size rebuild caught by the validator
+    } else if (hit) {
       const buf = new Uint8Array(await hit.arrayBuffer());
       if (buf.length === size) {
         post({ type: "loading", mode: "download", bytes: size, loaded: size, cached: true });
@@ -391,22 +620,73 @@ async function downloadWhole(
 
   const data = new Uint8Array(size);
   if (ranged) {
-    const viaZ = await downloadViaSidecar(url, size, (part, off) =>
-      data.set(part, off),
+    const viaZ = await downloadViaSidecar(
+      url,
+      size,
+      (part, off) => data.set(part, off),
+      signal,
     );
-    if (!viaZ) await fetchPieces(url, size, (part, off) => data.set(part, off));
-  } else {
-    const resp = await fetchWithRetry(url);
-    const buf = new Uint8Array(await resp.arrayBuffer());
-    if (buf.length !== size) {
-      throw new Error(`short response (${buf.length} of ${size} bytes)`);
+    if (!viaZ) {
+      await fetchPieces(url, size, (part, off) => data.set(part, off), signal);
     }
-    data.set(buf);
+  } else {
+    // No Range support: stream the body so progress still moves, with a
+    // stall watchdog (reset on every received chunk) and cancel relay —
+    // this single response IS the whole transfer.
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onAbort);
+    let stallTimer = setTimeout(() => ctrl.abort(), PIECE_TIMEOUT);
+    try {
+      const resp = await fetchWithRetry(url, { signal: ctrl.signal });
+      let loaded = 0;
+      let lastPosted = 0;
+      if (resp.body) {
+        const bodyReader = resp.body.getReader();
+        for (;;) {
+          const { done, value } = await bodyReader.read();
+          if (done) break;
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(() => ctrl.abort(), PIECE_TIMEOUT);
+          if (loaded + value.length > size) {
+            throw new Error(`long response (over ${size} bytes)`);
+          }
+          data.set(value, loaded);
+          loaded += value.length;
+          if (loaded - lastPosted >= 2 * 1024 * 1024 || loaded === size) {
+            lastPosted = loaded;
+            post({ type: "loading", mode: "download", bytes: size, loaded });
+          }
+        }
+      } else {
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        data.set(buf.subarray(0, Math.min(buf.length, size)));
+        loaded = buf.length;
+      }
+      if (loaded !== size) {
+        throw new Error(`short response (${loaded} of ${size} bytes)`);
+      }
+    } catch (e) {
+      if (signal?.aborted) throw new StopError("download cancelled");
+      throw e;
+    } finally {
+      clearTimeout(stallTimer);
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   if (cache) {
     try {
-      await cache.put(url, new Response(data.slice().buffer));
+      // No defensive copy: `data` is never mutated afterwards, and doubling
+      // a multi-hundred-MB allocation is the bigger risk.
+      await cache.put(
+        url,
+        new Response(data, {
+          headers: currentValidator
+            ? { "x-nutrimatic-validator": currentValidator }
+            : {},
+        }),
+      );
     } catch {
       // Quota exceeded etc. — caching is best-effort.
     }
@@ -414,14 +694,28 @@ async function downloadWhole(
   return data;
 }
 
+/** True when a cached full copy's validator contradicts the live probe's. */
+function cachedCopyStale(hit: Response): boolean {
+  const stored = hit.headers.get("x-nutrimatic-validator");
+  return stored !== null && currentValidator !== null && stored !== currentValidator;
+}
+
 const retryFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
   fetchWithRetry(String(input), init)) as typeof fetch;
 
-async function useMemory(data: Uint8Array, cached: boolean): Promise<void> {
-  reader = await IndexReader.open(new MemorySource(data));
+async function useMemory(
+  data: Uint8Array,
+  cached: boolean,
+  stillValid: () => boolean = () => true,
+): Promise<void> {
+  const r = await IndexReader.open(new MemorySource(data));
+  if (!stillValid()) return; // superseded by a newer open
+  reader = r;
   rangeSource = null;
   session = null;
-  post({
+  memBytes = data;
+  wasmEngine = null; // rebuilt lazily from the new bytes
+  postReady({
     type: "ready",
     bytes: data.length,
     mode: "memory",
@@ -431,45 +725,103 @@ async function useMemory(data: Uint8Array, cached: boolean): Promise<void> {
 }
 
 /** Interpret an early page-side probe response (same logic as the source). */
-function parseEarlyProbe(
-  probe: EarlyProbe,
-): { length: number; supportsRanges: boolean } | null {
+function parseEarlyProbe(probe: EarlyProbe): {
+  length: number;
+  supportsRanges: boolean;
+  validator: string | null;
+} | null {
   if (!probe.ok) return null;
-  if (probe.status === 206 && probe.contentRange) {
-    const m = /\/(\d+)\s*$/.exec(probe.contentRange);
-    if (m) return { length: parseInt(m[1], 10), supportsRanges: true };
+  const validator =
+    probe.etag || probe.lastModified
+      ? `${probe.etag ?? ""}|${probe.lastModified ?? ""}`
+      : null;
+  if (probe.status === 206) {
+    const m = probe.contentRange && /\/(\d+)\s*$/.exec(probe.contentRange);
+    if (m) return { length: parseInt(m[1], 10), supportsRanges: true, validator };
+    // A 206 whose total we can't parse (e.g. "bytes 0-0/*") must NOT fall
+    // through to Content-Length — that's the 1-byte range's length, and the
+    // index would open as a 1-byte file. Force a real probe instead.
+    return null;
   }
   if (probe.contentLength) {
-    return { length: parseInt(probe.contentLength, 10), supportsRanges: false };
+    return {
+      length: parseInt(probe.contentLength, 10),
+      supportsRanges: false,
+      validator,
+    };
   }
   return null;
 }
 
+// Generation counter: overlapping open/download-full operations (double
+// "Retry" clicks, an open racing a download) must not interleave their state
+// assignment — only the newest generation may touch globals or post.
+let openGen = 0;
+
 async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
+  const gen = ++openGen;
+  const stale = () => gen !== openGen;
   reader = null;
   rangeSource = null;
   diskSource?.close(); // release the OPFS lock before (re)opening anything
   diskSource = null;
   session = null;
+  memBytes = null;
+  wasmEngine = null; // dropping the instance frees its linear memory
   currentUrl = url;
   let probe = early?.probe ? parseEarlyProbe(early.probe) : null;
   if (!probe) {
     const p = await HttpRangeSource.open(url, { fetchFn: retryFetch });
-    probe = { length: p.length, supportsRanges: p.supportsRanges };
+    probe = {
+      length: p.length,
+      supportsRanges: p.supportsRanges,
+      validator: p.validator,
+    };
   }
+  if (stale()) return;
   currentSize = probe.length;
+  currentValidator = probe.validator;
+
+  // A changed validator with an unchanged size means the index was rebuilt:
+  // persisted range chunks (and the sidecar table) would silently serve
+  // stale bytes. Purge them before any source touches the store.
+  if (probe.validator) {
+    try {
+      const cache = await openCache(CHUNK_CACHE_NAME);
+      const key = `${url}?nutrimatic-validator`;
+      const prev = cache && (await cache.match(key));
+      const prevVal = prev ? await prev.text() : null;
+      if (stale()) return;
+      if (prevVal !== probe.validator) {
+        if (prevVal !== null) await purgeChunks(url);
+        await cache?.put(key, new Response(probe.validator));
+      }
+    } catch {
+      // validation is best-effort
+    }
+    if (stale()) return;
+  }
 
   // An OPFS copy opens instantly: sync disk reads, no RAM load.
   const disk = await openOpfsIndex(url, probe.length);
+  if (stale()) {
+    disk?.close(); // don't hold the lock the newer open needs
+    return;
+  }
   if (disk) {
+    const r = await IndexReader.open(disk);
+    if (stale()) {
+      disk.close();
+      return;
+    }
     diskSource = disk;
-    reader = await IndexReader.open(disk);
-    post({
+    reader = r;
+    postReady({
       type: "ready",
       bytes: probe.length,
       mode: "disk",
       cached: true,
-      total: reader.count(),
+      total: r.count(),
     });
     return;
   }
@@ -477,13 +829,18 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   // A previously downloaded full copy means zero network traffic.
   const cache = await openCache();
   const hit = cache && (await cache.match(url));
-  if (hit) {
+  if (hit && cachedCopyStale(hit)) {
+    await cache!.delete(url); // same-size rebuild caught by the validator
+    if (stale()) return;
+  } else if (hit) {
     const data = new Uint8Array(await hit.arrayBuffer());
+    if (stale()) return;
     if (data.length === probe.length) {
-      await useMemory(data, true);
+      await useMemory(data, true, () => !stale());
       return;
     }
     await cache.delete(url); // index changed on the server: start over
+    if (stale()) return;
   }
 
   if (probe.length <= TINY_LIMIT || !probe.supportsRanges) {
@@ -496,16 +853,15 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
       );
     }
     post({ type: "loading", bytes: probe.length, loaded: 0, mode: "download" });
-    await useMemory(
-      await downloadWhole(url, probe.length, probe.supportsRanges),
-      false,
-    );
+    const data = await downloadWhole(url, probe.length, probe.supportsRanges);
+    if (stale()) return;
+    await useMemory(data, false, () => !stale());
   } else {
     // Default for big indexes: fetch only what queries touch, and remember
     // those pieces across visits. A .idxz sidecar (if published next to the
     // index) roughly halves the bytes on the wire.
     post({ type: "loading", bytes: probe.length, mode: "range" });
-    rangeSource =
+    const src =
       (await CompressedRangeSource.open(url, probe.length, {
         fetchFn: retryFetch,
         prefixBytes: early?.table ? new Uint8Array(early.table) : undefined,
@@ -532,81 +888,223 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
         chunkSize: RANGE_CHUNK_SIZE,
         maxChunks: 4096,
       }));
+    if (stale()) return;
     // Prewarm the trie root region (the file tail) in the background: every
     // query starts there. Not awaited — the first search's own fetches
     // dedupe against it and win the bandwidth race.
-    const prewarm = rangeSource.ensure(
+    const prewarm = src.ensure(
       Math.max(0, probe.length - PREWARM_BYTES),
       probe.length,
     );
     if (prewarm) prewarm.catch(() => {});
-    reader = await IndexReader.open(rangeSource);
-    post({ type: "ready", bytes: probe.length, mode: "range", total: reader.count() });
+    const r = await IndexReader.open(src);
+    if (stale()) return;
+    rangeSource = src;
+    reader = r;
+    postReady({
+      type: "ready",
+      bytes: probe.length,
+      mode: "range",
+      total: r.count(),
+      // What "download whole index" would actually transfer: the compressed
+      // sidecar when one exists, the raw index otherwise.
+      downloadBytes:
+        src instanceof CompressedRangeSource
+          ? src.compressedSize
+          : probe.length,
+    });
+  }
+}
+
+// In-flight explicit download, abortable via the "cancel-download" message.
+let downloadCtrl: AbortController | null = null;
+
+/** Drop persisted range chunks + sidecar table for `url` (superseded by a
+ * full local copy). Keys cover both the plain and `.idxz` chunk stores. */
+async function purgeChunks(url: string): Promise<void> {
+  try {
+    const cache = await openCache(CHUNK_CACHE_NAME);
+    if (!cache) return;
+    // Keys are `${url}?nutrimatic-...` (plain store, validator, table) and
+    // `${url}.idxz?nutrimatic-chunk=...` (compressed store). Matching those
+    // two exact prefixes — rather than a bare `startsWith(url)` — avoids
+    // also purging a different index whose URL merely starts with this one.
+    for (const req of await cache.keys()) {
+      if (
+        req.url.startsWith(url + "?") ||
+        req.url.startsWith(url + ".idxz?")
+      ) {
+        await cache.delete(req);
+      }
+    }
+  } catch {
+    // best-effort
   }
 }
 
 async function downloadFull(): Promise<void> {
   if (!currentUrl) throw new Error("no index loaded");
+  if (downloadCtrl) throw new Error("a download is already in progress");
   if (currentSize > FULL_DOWNLOAD_LIMIT) {
     throw new Error("index too large to download whole");
   }
-  post({ type: "loading", bytes: currentSize, loaded: 0, mode: "download" });
-
-  const disk = await downloadToOpfs(currentUrl, currentSize);
-  if (disk) {
-    diskSource = disk;
-    reader = await IndexReader.open(disk);
-    rangeSource = null;
-    session = null;
-    // The OPFS copy supersedes any Cache Storage full copy: free the quota.
-    void openCache().then((c) => c?.delete(currentUrl!)).catch(() => {});
-    post({
-      type: "ready",
-      bytes: currentSize,
-      mode: "disk",
-      cached: false,
-      total: reader.count(),
-    });
-    return;
+  // Fail fast on insufficient storage instead of minutes into the transfer.
+  try {
+    const est = await navigator.storage.estimate();
+    if (
+      est.quota != null &&
+      est.usage != null &&
+      currentSize > est.quota - est.usage
+    ) {
+      const free = Math.max(0, est.quota - est.usage);
+      throw new Error(
+        `not enough storage (need ${Math.round(currentSize / 1048576)} MB, ` +
+          `~${Math.round(free / 1048576)} MB free)`,
+      );
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("not enough")) throw e;
+    // estimate() unavailable: proceed and let the write fail if it must.
   }
+  // Ask the browser not to evict gigabytes of index behind the user's back.
+  void navigator.storage.persist?.().catch(() => {});
 
-  // OPFS unavailable: fall back to the in-memory + Cache Storage path.
-  await useMemory(await downloadWhole(currentUrl, currentSize, true), false);
+  downloadCtrl = new AbortController();
+  const signal = downloadCtrl.signal;
+  const gen = openGen; // a newer open supersedes this download's results
+  post({ type: "loading", bytes: currentSize, loaded: 0, mode: "download" });
+  try {
+    const disk = await downloadToOpfs(currentUrl, currentSize, signal);
+    if (gen !== openGen) {
+      disk?.close();
+      return;
+    }
+    if (disk) {
+      diskSource = disk;
+      reader = await IndexReader.open(disk);
+      rangeSource = null;
+      session = null;
+      wasmEngine = null; // rebuild from the disk copy on next search
+      // The full copy supersedes the Cache Storage copy AND any persisted
+      // range chunks for this index: free the quota.
+      void openCache().then((c) => c?.delete(currentUrl!)).catch(() => {});
+      void purgeChunks(currentUrl);
+      postReady({
+        type: "ready",
+        bytes: currentSize,
+        mode: "disk",
+        cached: false,
+        total: reader.count(),
+      });
+      return;
+    }
+
+    // OPFS unavailable: fall back to the in-memory + Cache Storage path —
+    // but never try to hold a gigabyte-class index in RAM.
+    if (currentSize > 512 * 1024 * 1024) {
+      throw new Error(
+        "device storage unavailable and the index is too large to hold in memory",
+      );
+    }
+    const data = await downloadWhole(currentUrl, currentSize, true, signal);
+    if (gen !== openGen) return;
+    await useMemory(data, false, () => gen === openGen);
+    void purgeChunks(currentUrl);
+  } finally {
+    downloadCtrl = null;
+  }
 }
 
-async function runSession(maxSteps: number, maxResults: number): Promise<void> {
+// The session a live run is stepping, if any. Two runs on the SAME session
+// would corrupt the shared driver scratch state, so a continue targeting it
+// is dropped. Runs of REPLACED sessions don't block anything: they unwind at
+// their next yield, and their private state can't corrupt the new session.
+let activeRunSession: SearchSession | WasmSession | null = null;
+
+async function runSession(
+  maxSteps: number,
+  maxResults: number,
+  // The search handler captures its token at message receipt, so a slow
+  // engine-creation await can't let an older query outrank a newer one.
+  givenToken?: number,
+): Promise<void> {
   if (!session) return;
-  const token = ++runToken;
-  const active = session;
+  const token = givenToken ?? ++runToken;
+  let active = session;
+  const engineOf = (s: typeof active) => (s instanceof WasmSession ? "wasm" : "js");
+  const onProgress = (steps: number) => {
+    if (token !== runToken) return; // superseded: stop talking to the UI
+    post({
+      type: "progress",
+      steps,
+      engine: engineOf(active),
+      fetched: rangeSource?.bytesFetched,
+      requests: rangeSource?.requests,
+    });
+  };
+  const yieldCheck = () => {
+    if (token !== runToken) throw new StopError();
+    // Yield so incoming messages (stop / continue) are processed.
+    return macroYield();
+  };
+  const emit = (r: { score: number; text: string }) => {
+    if (token !== runToken) return; // superseded: stop talking to the UI
+    emitted.add(r.text);
+    post({ type: "result", score: r.score, text: r.text });
+  };
+  activeRunSession = active;
   try {
-    const status = await active.run(
-      maxSteps,
-      maxResults,
-      (r) => post({ type: "result", score: r.score, text: r.text }),
-      (steps) =>
-        post({
-          type: "progress",
-          steps,
-          fetched: rangeSource?.bytesFetched,
-          requests: rangeSource?.requests,
-        }),
-      () => {
-        if (token !== runToken) throw new StopError();
-        // Yield so incoming messages (stop / continue) are processed.
-        return macroYield();
-      },
-    );
+    let status;
+    try {
+      status = await active.run(maxSteps, maxResults, emit, onProgress, yieldCheck);
+    } catch (e) {
+      if (
+        !(active instanceof WasmSession) ||
+        e instanceof StopError ||
+        token !== runToken ||
+        !reader ||
+        currentQuery === null
+      ) {
+        throw e;
+      }
+      // Kernel capacity overflow (or trap): replay this query on the JS
+      // engine. Identical score-streams mean the replay regenerates exactly
+      // the results already posted; suppress those.
+      if (!(e instanceof WasmCapacityError)) wasmBroken = true;
+      const js = new SearchSession(reader, currentQuery, undefined, {
+        prefetchDepth: rangeSource ? PREFETCH_DEPTH : 0,
+      });
+      session = js;
+      active = js;
+      activeRunSession = js;
+      // The replay regenerates every already-posted (suppressed) result;
+      // widen its result budget so suppression doesn't eat the new page.
+      status = await js.run(
+        maxSteps,
+        maxResults + emitted.size,
+        (r) => {
+          if (!emitted.has(r.text)) emit(r);
+        },
+        onProgress,
+        yieldCheck,
+      );
+    }
     if (token !== runToken) return;
     post({
       type: "done",
       status, // "limit" (step budget), "results" (page full), "exhausted"
       steps: active.steps,
+      engine: engineOf(active),
       fetched: rangeSource?.bytesFetched,
       requests: rangeSource?.requests,
     });
   } catch (e) {
     if (e instanceof StopError || token !== runToken) return;
     post({ type: "error", message: e instanceof Error ? e.message : String(e) });
+  } finally {
+    // Only clear our own registration — a stale run finishing late must not
+    // wipe the marker of the run that replaced it.
+    if (activeRunSession === active) activeRunSession = null;
   }
 }
 
@@ -614,6 +1112,9 @@ class StopError extends Error {}
 
 onmessage = async (ev: MessageEvent<InMsg>) => {
   const msg = ev.data;
+  // Wake any parked runs: superseded ones re-check their token and unwind
+  // promptly instead of lingering until some other run happens to yield.
+  yieldChannel.port2.postMessage(0);
   try {
     switch (msg.type) {
       case "open":
@@ -622,28 +1123,97 @@ onmessage = async (ev: MessageEvent<InMsg>) => {
         break;
       case "search": {
         if (!reader) throw new Error("no index loaded");
-        ++runToken;
-        try {
-          session = new SearchSession(reader, msg.query, undefined, {
-            prefetchDepth: rangeSource ? PREFETCH_DEPTH : 0,
-          });
-        } catch (e) {
-          if (e instanceof ParseError) {
-            post({ type: "parse-error", rest: e.rest });
-            return;
+        const token = ++runToken;
+        currentQuery = msg.query;
+        emitted = new Set();
+        session = null;
+        const wasmEligible =
+          !wasmBroken &&
+          (memBytes !== null ||
+            (diskSource !== null && currentSize <= WASM_INDEX_LIMIT));
+        if (wasmEligible) {
+          try {
+            const engine = await getWasmEngine();
+            if (token !== runToken) return; // superseded while instantiating
+            session = new WasmSession(engine, msg.query);
+          } catch (e) {
+            if (e instanceof ParseError) {
+              post({ type: "parse-error", rest: e.rest });
+              return;
+            }
+            // A superseded search may fail for staleness reasons (its index
+            // was switched or removed mid-flight) — that says nothing about
+            // the environment.
+            if (token !== runToken) return;
+            // Engine unavailable here (instantiation/memory/capacity):
+            // quietly use the JS engine, and stop retrying environmental
+            // failures every search.
+            if (!(e instanceof WasmCapacityError)) wasmBroken = true;
+            session = null;
           }
-          throw e;
         }
-        await runSession(msg.maxSteps, msg.maxResults);
+        if (!session) {
+          try {
+            session = new SearchSession(reader, msg.query, undefined, {
+              prefetchDepth: rangeSource ? PREFETCH_DEPTH : 0,
+            });
+          } catch (e) {
+            if (e instanceof ParseError) {
+              post({ type: "parse-error", rest: e.rest });
+              return;
+            }
+            throw e;
+          }
+        }
+        if (token !== runToken) return; // superseded during setup
+        await runSession(msg.maxSteps, msg.maxResults, token);
         break;
       }
       case "continue":
+        if (!session) {
+          // e.g. a continue racing an index switch: never leave the UI
+          // waiting on a done that will not come.
+          throw new Error("no search to continue");
+        }
+        // Duplicate continue for the session that's already running: that
+        // run will answer. (A stale run of a REPLACED session doesn't match
+        // and must not block — dropping here would hang the UI.)
+        if (activeRunSession === session) break;
         await runSession(msg.maxSteps, msg.maxResults);
         break;
-      case "download-full":
+      case "download-full": {
         ++runToken; // cancel any in-flight search run
-        await downloadFull();
+        const gen = openGen;
+        try {
+          await downloadFull();
+        } catch (e) {
+          if (gen !== openGen) break; // superseded by a newer open: hush
+          // The previously loaded index is still usable — tell the UI to
+          // restore it rather than showing a dead "load failed" state.
+          post({
+            type: "download-error",
+            message: e instanceof Error ? e.message : String(e),
+          });
+          if (lastReady) post(lastReady);
+        }
         break;
+      }
+      case "cancel-download":
+        downloadCtrl?.abort();
+        break;
+      case "remove-copy": {
+        // Free the device copy (OPFS + any Cache Storage full copy), then
+        // reopen the index in its default mode.
+        if (!currentUrl) break;
+        ++runToken;
+        const url = currentUrl;
+        diskSource?.close();
+        diskSource = null;
+        await opfsRemove(url);
+        await openCache().then((c) => c?.delete(url)).catch(() => {});
+        await openIndex(url);
+        break;
+      }
       case "stop":
         ++runToken;
         break;

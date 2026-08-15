@@ -38,6 +38,72 @@ export interface CompressedRangeSourceOptions {
   prefixBytes?: Uint8Array;
 }
 
+/** A sidecar's parsed header+table plus the raw prefix bytes (cacheable). */
+export interface IdxzPrefix {
+  header: IdxzHeader;
+  table: Float64Array;
+  /** Exactly `header.dataStart` bytes: the header + compressed table. */
+  bytes: Uint8Array;
+}
+
+/** Parse a header+table prefix already in memory (must cover dataStart). */
+export async function parseIdxzPrefix(
+  bytes: Uint8Array,
+  expectedSize: number,
+): Promise<IdxzPrefix | null> {
+  const header = parseIdxzHeader(bytes);
+  if (!header || header.uncompressedSize !== expectedSize) return null;
+  if (bytes.length < header.dataStart) return null;
+  const table = await parseIdxzTable(
+    bytes.subarray(IDXZ_HEADER_SIZE, header.dataStart),
+    header.numBlocks,
+  );
+  if (!table) return null;
+  return { header, table, bytes: bytes.subarray(0, header.dataStart) };
+}
+
+/**
+ * Fetch a sidecar's header+table over ranged GETs (one optimistic 64KB round
+ * trip, completed if the table runs longer). `initial` seeds the parse with
+ * bytes something else already fetched (e.g. the page's early probe); when
+ * they turn out unusable the fetch restarts from the network. Null means "no
+ * usable sidecar" — including hosts that ignore Range (a 200 here would fail
+ * every later block fetch, so it must be caught at open time).
+ */
+export async function fetchIdxzPrefix(
+  url: string,
+  expectedSize: number,
+  fetchFn: typeof fetch,
+  initial?: Uint8Array,
+): Promise<IdxzPrefix | null> {
+  try {
+    let buf = initial;
+    if (!buf) {
+      const first = await fetchFn(url, { headers: { Range: "bytes=0-65535" } });
+      if (!first.ok || first.status !== 206) return null;
+      buf = new Uint8Array(await first.arrayBuffer());
+    }
+    const header = parseIdxzHeader(buf);
+    if (!header || header.uncompressedSize !== expectedSize) {
+      return initial ? fetchIdxzPrefix(url, expectedSize, fetchFn) : null;
+    }
+    if (buf.length < header.dataStart) {
+      const rest = await fetchFn(url, {
+        headers: { Range: `bytes=${buf.length}-${header.dataStart - 1}` },
+      });
+      if (!rest.ok || rest.status !== 206) return null;
+      const more = new Uint8Array(await rest.arrayBuffer());
+      const joined = new Uint8Array(header.dataStart);
+      joined.set(buf);
+      joined.set(more, buf.length);
+      buf = joined;
+    }
+    return await parseIdxzPrefix(buf, expectedSize);
+  } catch {
+    return null;
+  }
+}
+
 export class CompressedRangeSource implements ByteSource {
   private readonly cache = new Map<number, Uint8Array>();
   private readonly inflight = new Map<number, Promise<void>>();
@@ -64,6 +130,11 @@ export class CompressedRangeSource implements ByteSource {
     return this.table[this.header.numBlocks] / this.header.uncompressedSize;
   }
 
+  /** Total sidecar bytes (header + table + blocks): the real download size. */
+  get compressedSize(): number {
+    return this.header.dataStart + this.table[this.header.numBlocks];
+  }
+
   /**
    * Open `indexUrl`'s sidecar (`<indexUrl>.idxz`). Returns null if the
    * sidecar is missing, malformed, or stale (wrong uncompressed size) —
@@ -77,76 +148,23 @@ export class CompressedRangeSource implements ByteSource {
     const fetchFn = opts.fetchFn ?? fetch.bind(globalThis);
     const url = indexUrl + ".idxz";
     try {
-      // A cached header+table prefix skips all table traffic on revisits.
-      let prefix = await opts.tableStore?.get().catch(() => undefined);
-      let header = prefix ? parseIdxzHeader(prefix) : null;
-      if (
-        !header ||
-        header.uncompressedSize !== expectedSize ||
-        prefix!.length < header.dataStart
-      ) {
-        prefix = undefined;
-        header = null;
+      // A cached header+table prefix skips all table traffic on revisits;
+      // a corrupt or stale cache entry falls through to a fresh fetch.
+      const cached = await opts.tableStore?.get().catch(() => undefined);
+      let pre = cached ? await parseIdxzPrefix(cached, expectedSize) : null;
+      if (!pre) {
+        pre = await fetchIdxzPrefix(url, expectedSize, fetchFn, opts.prefixBytes);
+        if (pre) opts.tableStore?.put(pre.bytes.slice());
       }
-
-      // Fetch the remainder when a first chunk didn't cover the table.
-      const complete = async (
-        buf: Uint8Array,
-        h: IdxzHeader,
-      ): Promise<Uint8Array | null> => {
-        if (buf.length >= h.dataStart) return buf.subarray(0, h.dataStart);
-        const rest = await fetchFn(url, {
-          headers: { Range: `bytes=${buf.length}-${h.dataStart - 1}` },
-        });
-        if (!rest.ok) return null;
-        const more = new Uint8Array(await rest.arrayBuffer());
-        const joined = new Uint8Array(h.dataStart);
-        joined.set(buf);
-        joined.set(more, buf.length);
-        return joined;
-      };
-
-      // Prefix bytes handed in by an early page-side fetch.
-      if (!prefix && opts.prefixBytes) {
-        const h = parseIdxzHeader(opts.prefixBytes);
-        if (h && h.uncompressedSize === expectedSize) {
-          const full = await complete(opts.prefixBytes, h);
-          if (full) {
-            header = h;
-            prefix = full;
-            opts.tableStore?.put(prefix.slice());
-          }
-        }
-      }
-
-      if (!prefix) {
-        // Optimistic first fetch: 64KB covers header+table for indexes up
-        // to roughly 2GB, making the open a single round trip.
-        const first = await fetchFn(url, { headers: { Range: "bytes=0-65535" } });
-        if (!first.ok) return null;
-        const buf = new Uint8Array(await first.arrayBuffer());
-        header = parseIdxzHeader(buf);
-        if (!header || header.uncompressedSize !== expectedSize) return null;
-        const full = await complete(buf, header);
-        if (!full) return null;
-        prefix = full;
-        opts.tableStore?.put(prefix.slice());
-      }
-      if (!header || !prefix) return null;
-
-      const table = await parseIdxzTable(
-        prefix.subarray(IDXZ_HEADER_SIZE, header.dataStart),
-        header.numBlocks,
-      );
-      if (!table) return null;
+      if (!pre) return null;
 
       return new CompressedRangeSource(
         url,
-        header,
-        table,
+        pre.header,
+        pre.table,
         opts.maxBlocks ?? 4096,
         fetchFn,
-        opts.makeStore?.(header.blockSize),
+        opts.makeStore?.(pre.header.blockSize),
       );
     } catch {
       return null;
@@ -250,13 +268,13 @@ export class CompressedRangeSource implements ByteSource {
       const off = this.table[b] - this.table[first];
       const len = this.table[b + 1] - this.table[b];
       jobs.push(
-        inflateRawBlock(buf.subarray(off, off + len)).then((data) => {
+        inflateRawBlock(buf.subarray(off, off + len), this.header.blockSize).then((data) => {
           const expected = Math.min(
             this.header.blockSize,
             this.length - b * this.header.blockSize,
           );
-          if (data.length !== expected) {
-            throw new Error(`idxz block ${b} decompressed to ${data.length}`);
+          if (data === null || data.length !== expected) {
+            throw new Error(`idxz block ${b} decompressed to ${data?.length ?? "oversize"}`);
           }
           this.insertBlock(b, data, true);
         }),

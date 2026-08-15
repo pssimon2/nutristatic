@@ -1,7 +1,10 @@
-# WASM search-kernel prototype
+# WASM search kernel
 
-Measurement rig answering "is WebAssembly worth it for the search engine?"
-Not wired into the app.
+Started as a measurement rig answering "is WebAssembly worth it for the
+search engine?"; kernel v2 (below) is now SHIPPED: the web worker runs it
+for fully-local indexes via `src/wasm-session.ts` (JS engine remains the
+fallback and the range-mode engine). Rebuild after editing `kernel2.c` with
+`npm run build-wasm` — the web build bundles `kernel2.wasm` as an asset.
 
 - `kernel.c` — the best-first walk (4-ary frontier heap, trie node parsing,
   dense-DFA stepping, restart logic) as freestanding C compiled with plain
@@ -59,9 +62,16 @@ so the heavy anagram queries run fully in WASM. Measured on the German index
 The full engine wins only 1.2-1.3x on the queries that matter (v1's 2.7x was
 the dense-DFA fast path on already-fast patterns). The JS engine's typed-array
 hot loop is simply near-native for this workload; the kernel also lacks the
-parse cache, so a fully-invested port might reach ~1.5x. Conclusion
-unchanged, now with data instead of estimates: not worth a second engine for
-<=30-50% on searches that already run in 0.4s end-to-end from device storage.
+parse cache, so a fully-invested port might reach ~1.5x.
 
-Build/run: comments atop kernel2.c; `npx tsx wasm-proto/bench-wasm2.mjs`.
+Despite the modest margin the kernel v2 WAS integrated (2026-08-14 evening):
+`src/wasm-session.ts` drives it behind SearchSession's exact interface, the
+worker picks it for fully-local indexes (memory mode, or OPFS disk ≤800MB —
+the index is copied into linear memory), and any failure falls back to the
+JS engine by replaying the query with already-emitted results suppressed
+(safe because the score-streams are identical; parity is locked by
+test/wasm-session.test.ts). kernel2.c gained `heap_mark`/`heap_reset`
+exports so per-query tables are reused instead of leaking.
+
+Build/run: `npm run build-wasm`; bench: `npx tsx wasm-proto/bench-wasm2.mjs`.
 

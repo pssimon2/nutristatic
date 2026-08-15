@@ -1,65 +1,96 @@
+// Local end-to-end browser test against `vite preview web --port 4517`.
+// Uses the dist-bundled demo index (the default en-wiki.index is not in
+// dist). Covers: range mode + compressed download-size label, searching on
+// the JS engine, full download -> OPFS disk mode -> WASM engine, reload
+// persistence, the interrupt-then-continue race, remove-device-copy, and
+// parse errors. Exits non-zero on any failure.
 import { chromium } from "playwright-core";
 
 const exe = `${process.env.HOME}/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`;
+const base = process.argv[2] || "http://localhost:4517/";
 const browser = await chromium.launch({ executablePath: exe });
 const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
-page.on("console", (m) => console.log("console:", m.type(), m.text()));
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 
-// Home page
-await page.goto("http://localhost:4517/");
-await page.waitForSelector("#examples li");
-console.log("home title:", await page.title());
-await page.waitForFunction(
-  () => document.getElementById("indexinfo").textContent.includes("in memory"),
-  null,
-  { timeout: 60000 },
-);
-console.log("index status:", await page.textContent("#indexinfo"));
-await page.screenshot({ path: "home.png" });
+const waitInfo = (substr, timeout = 120000) =>
+  page.waitForFunction(
+    (s) => document.getElementById("indexinfo").textContent.includes(s),
+    substr,
+    { timeout },
+  );
+const waitDone = (timeout = 120000) =>
+  page.waitForFunction(
+    () =>
+      document.getElementById("after").textContent.length > 0 &&
+      document.getElementById("status").textContent === "",
+    null,
+    { timeout },
+  );
 
-// Search via the form
+// Range mode: correct info line and compressed download size on the button.
+await page.goto(base + "?index=./demo.index");
+await page.waitForSelector("#examples li");
+console.log("title:", await page.title());
+await waitInfo("loading only");
+console.log("range info:", await page.textContent("#indexinfo"));
+const dl = await page.textContent("#dlfull");
+console.log("download button:", dl);
+if (!/download whole index \(\d+ MB\)/.test(dl)) throw new Error("bad dl label");
+
+// Search in range mode (JS engine).
 await page.fill("#q", "<aaagmnr>");
 await page.click("input[type=submit]");
+await waitDone();
+const first = await page.$eval("#results span", (e) => e.textContent);
+console.log("range search first:", first);
+if (first !== "anagram") throw new Error("wrong first result");
+
+// Full download -> disk mode -> WASM engine.
+await page.click("#dlfull");
+await waitInfo("device storage");
+await waitDone();
+await page.fill("#q", "<aaagmnr>");
+await page.click("input[type=submit]");
+await waitDone();
+await waitInfo("WASM engine", 10000);
+console.log("disk info:", await page.textContent("#indexinfo"));
+
+// Interrupt race: heavy query, interrupt with light one, then continue.
+await page.fill("#q", "<aaeeiimnnorsttu>");
+await page.click("input[type=submit]");
+await page.waitForTimeout(300);
+await page.fill("#q", "<aaagmnr>");
+await page.click("input[type=submit]");
+await waitDone();
+if ((await page.$eval("#results span", (e) => e.textContent)) !== "anagram") {
+  throw new Error("interrupted search returned wrong results");
+}
+await (await page.$("#after button")).click();
+await waitDone(30000);
+const n = (await page.$$("#results span")).length;
+console.log("after interrupt + continue:", n, "results");
+if (n < 1500) throw new Error("continue after interrupt failed");
+
+// Reload: disk copy persists, WASM engages on a fresh worker.
+await page.goto(base + "?index=./demo.index&q=" + encodeURIComponent("solar s_stem"));
+await waitDone();
+console.log("reload first:", await page.$eval("#results span", (e) => e.textContent));
+await waitInfo("device storage");
+
+// Remove the device copy: back to range mode, query re-runs.
+await page.click("#dlfull");
+await waitInfo("loading only");
+await waitDone();
+console.log("after remove:", await page.textContent("#indexinfo"), "|", await page.textContent("#dlfull"));
+
+// Parse error.
+await page.goto(base + "?index=./demo.index&q=" + encodeURIComponent("((("));
 await page.waitForFunction(
-  () => document.querySelectorAll("#results span").length > 0,
+  () => document.getElementById("status").className === "error",
   null,
   { timeout: 60000 },
 );
-await page.waitForFunction(
-  () => document.getElementById("after").textContent.length > 0 ||
-        document.getElementById("status").textContent === "",
-  null,
-  { timeout: 120000 },
-);
-const results = await page.$$eval("#results span", (els) =>
-  els.slice(0, 5).map((e) => `${e.textContent} (${e.style.fontSize})`),
-);
-console.log("anagram results:", results);
-console.log("after:", await page.textContent("#after"));
-console.log("url:", page.url());
-await page.screenshot({ path: "search.png" });
-
-// Pattern with computation limit: something open-ended
-await page.goto("http://localhost:4517/?q=" + encodeURIComponent('"C*aC*eC*iC*oC*uC*yC*"'));
-await page.waitForFunction(
-  () => document.getElementById("after").textContent.length > 0,
-  null,
-  { timeout: 120000 },
-);
-console.log("facetiously first:", await page.$eval("#results span", (e) => e.textContent));
-console.log("facetiously after:", await page.textContent("#after"));
-await page.screenshot({ path: "search2.png" });
-
-// Parse error case
-await page.goto("http://localhost:4517/?q=" + encodeURIComponent("((("));
-await page.waitForFunction(
-  () => document.getElementById("status").textContent.includes("parse") ||
-        document.getElementById("status").className === "error",
-  null,
-  { timeout: 60000 },
-);
-console.log("error case:", await page.textContent("#status"));
+console.log("parse error:", await page.textContent("#status"));
 
 await browser.close();
 console.log("BROWSER TEST OK");

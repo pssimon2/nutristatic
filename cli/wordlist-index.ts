@@ -9,6 +9,7 @@
 // usage: wordlist-index out.index count_1w.txt [count_2w.txt]
 
 import * as fs from "node:fs";
+import * as readline from "node:readline";
 import { IndexWriter, writeEntries } from "../src/index-writer.js";
 import { FileSink } from "../src/node-io.js";
 
@@ -20,23 +21,43 @@ if (!outPath || !unigramPath) {
 
 const WORD = /^[a-z0-9]+$/;
 
-function parseList(path: string): Map<string, number> {
+// Streamed line-by-line: readFileSync(path, "utf8") hits V8's 512MB string
+// ceiling on full-size n-gram lists.
+async function parseList(path: string): Promise<Map<string, number>> {
   const out = new Map<string, number>();
-  for (const line of fs.readFileSync(path, "utf8").split("\n")) {
-    if (!line) continue;
-    const tab = line.indexOf("\t");
-    if (tab === -1) continue;
-    const phrase = line.slice(0, tab).toLowerCase();
-    const count = Number(line.slice(tab + 1));
-    if (!(count > 0)) continue;
-    if (!phrase.split(" ").every((w) => WORD.test(w))) continue;
-    out.set(phrase, (out.get(phrase) ?? 0) + count);
+  try {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(path),
+      terminal: false,
+    });
+    for await (const line of rl) {
+      if (!line) continue;
+      const tab = line.indexOf("\t");
+      if (tab === -1) continue;
+      const phrase = line.slice(0, tab).toLowerCase();
+      const count = Number(line.slice(tab + 1));
+      if (!(count > 0)) continue;
+      if (!phrase.split(" ").every((w) => WORD.test(w))) continue;
+      out.set(phrase, (out.get(phrase) ?? 0) + count);
+    }
+  } catch {
+    console.error(`error: can't read "${path}"`);
+    process.exit(1);
   }
   return out;
 }
 
-const unigrams = parseList(unigramPath);
-const bigrams = bigramPath ? parseList(bigramPath) : new Map<string, number>();
+const unigrams = await parseList(unigramPath);
+const bigrams = bigramPath ? await parseList(bigramPath) : new Map<string, number>();
+
+// A bigram line without a space would corrupt an unrelated word's residual
+// (slice(0, -1) chops the last character): drop it loudly.
+for (const phrase of [...bigrams.keys()]) {
+  if (!phrase.includes(" ")) {
+    console.error(`warning: ignoring spaceless bigram line "${phrase}"`);
+    bigrams.delete(phrase);
+  }
+}
 
 // Sum of bigram continuations per first word.
 const continuations = new Map<string, number>();
@@ -59,7 +80,17 @@ for (const [word, count] of unigrams) {
 console.error(
   `writing ${entries.length} entries (${unigrams.size} words, ${bigrams.size} bigrams)`,
 );
-const sink = new FileSink(outPath);
+let sink: FileSink;
+try {
+  sink = new FileSink(outPath, { exclusive: true });
+} catch (e) {
+  if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+    console.error(`error: output "${outPath}" already exists`);
+  } else {
+    console.error(`error: can't write "${outPath}"`);
+  }
+  process.exit(1);
+}
 writeEntries(new IndexWriter(sink), entries);
 sink.close();
 console.error(`wrote ${outPath}`);

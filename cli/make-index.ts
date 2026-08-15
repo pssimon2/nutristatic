@@ -10,7 +10,7 @@ const CHAINS_PER_FILE = 1000000;
 const TITLE_MULTIPLIER = 10;
 
 const prefix = process.argv[2];
-if (!prefix || prefix.startsWith("-")) {
+if (!prefix || prefix.startsWith("-") || process.argv.length > 3) {
   console.error("usage: make-index outfileprefix < textfile.txt");
   process.exit(2);
 }
@@ -20,7 +20,22 @@ let chains: string[] = [];
 
 function writeIndex(): void {
   const name = `${prefix}.${String(fileCount++).padStart(5, "0")}.index`;
-  const sink = new FileSink(name);
+  let sink: FileSink;
+  try {
+    // Exclusive: silently clobbering a previous (possibly partial) run's
+    // chunks hides mixed-run corruption; the build scripts remove stale
+    // chunks explicitly.
+    sink = new FileSink(name, { exclusive: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      console.error(
+        `error: "${name}" already exists (remove stale chunks before rerunning)`,
+      );
+    } else {
+      console.error(`error: can't write "${name}"`);
+    }
+    process.exit(1);
+  }
   const writer = new IndexWriter(sink);
   writeEntries(writer, chains.map((c) => [c, 1]));
   sink.close();

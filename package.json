@@ -14,7 +14,8 @@
     "merge-indexes": "tsx cli/merge-indexes.ts",
     "dump-index": "tsx cli/dump-index.ts",
     "wordlist-index": "tsx cli/wordlist-index.ts",
-    "compress-index": "tsx cli/compress-index.ts"
+    "compress-index": "tsx cli/compress-index.ts",
+    "build-wasm": "clang --target=wasm32-unknown-unknown -O3 -nostdlib -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined -Wl,--initial-memory=17039360 -Wl,--max-memory=3221225472 -o wasm-proto/kernel2.wasm wasm-proto/kernel2.c"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

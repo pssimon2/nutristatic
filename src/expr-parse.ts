@@ -175,7 +175,11 @@ function parsePiece(
       max = min;
     }
     p += 1 + m[0].length;
-    if (s[p] !== "}" || max < min || (max > 255 && max < INF)) return null;
+    // Cap min like max: an unbounded lower bound (a{100000,}) would loop
+    // building a huge NFA with no cancellation path.
+    if (s[p] !== "}" || max < min || (max > 255 && max < INF) || min > 255) {
+      return null;
+    }
     ++p;
   } else {
     // No quantifier: the atom passes through with conjuncts intact.

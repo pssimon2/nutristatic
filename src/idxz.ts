@@ -22,6 +22,12 @@ export const IDXZ_MAGIC = "nutriz02";
 export const IDXZ_BLOCK_SIZE = 1 << 15;
 export const IDXZ_HEADER_SIZE = 24;
 
+// Sanity ceilings for a parsed header (defense against crafted sidecars from
+// attacker-hosted custom indexes). Generous vs. any real index.
+const MAX_BLOCK_SIZE = 1 << 24; // 16MB (real: 32KB)
+const MAX_TABLE_BYTES = 32 << 20; // 32MB compressed table (real: <1MB)
+const MAX_UNCOMPRESSED_SIZE = 8 * 2 ** 30; // 8GB (download ceiling is 2GB)
+
 export interface IdxzHeader {
   blockSize: number;
   uncompressedSize: number;
@@ -47,6 +53,17 @@ export function parseIdxzHeader(bytes: Uint8Array): IdxzHeader | null {
     view.getUint32(12, true) + view.getUint32(16, true) * 2 ** 32;
   const tableBytes = view.getUint32(20, true);
   if (!(blockSize > 0) || !(uncompressedSize > 0) || !(tableBytes > 0)) {
+    return null;
+  }
+  // Reject implausible headers up front: a crafted sidecar (attacker-hosted
+  // custom index) must not drive a multi-GB allocation from `dataStart` or an
+  // absurd block count. These bounds sit far above any real index (a 2GB
+  // index at 32KB blocks has a ~128KB raw table) yet cap the blast radius.
+  if (
+    blockSize > MAX_BLOCK_SIZE ||
+    tableBytes > MAX_TABLE_BYTES ||
+    uncompressedSize > MAX_UNCOMPRESSED_SIZE
+  ) {
     return null;
   }
   const numBlocks = idxzNumBlocks(uncompressedSize, blockSize);
@@ -82,8 +99,10 @@ export async function parseIdxzTable(
   compressed: Uint8Array,
   numBlocks: number,
 ): Promise<Float64Array | null> {
-  const raw = await inflateRawBlock(compressed);
-  if (raw.length !== numBlocks * 2) return null;
+  // The table inflates to exactly numBlocks*2 bytes; cap there so a bomb
+  // block can't inflate to gigabytes before the post-hoc length check.
+  const raw = await inflateRawBlock(compressed, numBlocks * 2);
+  if (raw === null || raw.length !== numBlocks * 2) return null;
   const view = new DataView(raw.buffer, raw.byteOffset);
   const table = new Float64Array(numBlocks + 1);
   for (let i = 0; i < numBlocks; ++i) {
@@ -92,10 +111,49 @@ export async function parseIdxzTable(
   return table;
 }
 
-/** Decompress one raw-deflate block using the browser-native stream API. */
-export async function inflateRawBlock(data: Uint8Array): Promise<Uint8Array> {
+/**
+ * Decompress one raw-deflate block. When `maxBytes` is given, inflation is
+ * aborted the moment output would exceed it — so a decompression bomb in an
+ * attacker-supplied sidecar can't balloon memory before a post-hoc size
+ * check (returns null instead). Reads the stream incrementally rather than
+ * buffering the whole (attacker-chosen) output first.
+ */
+export async function inflateRawBlock(
+  data: Uint8Array,
+  maxBytes?: number,
+): Promise<Uint8Array>;
+export async function inflateRawBlock(
+  data: Uint8Array,
+  maxBytes: number,
+): Promise<Uint8Array | null>;
+export async function inflateRawBlock(
+  data: Uint8Array,
+  maxBytes?: number,
+): Promise<Uint8Array | null> {
   const stream = new Blob([data as BlobPart])
     .stream()
     .pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  if (maxBytes === undefined) {
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null; // bomb: bail before allocating the full output
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
 }

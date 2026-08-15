@@ -8,6 +8,10 @@ documentation lives in the site's
 [usage guide](https://nutristatic.org/usage.html); this README covers the
 implementation. The pattern engine is TypeScript running in a Web Worker
 in the visitor's browser; the phrase-frequency index is a plain static file.
+(A WebAssembly port of the engine — `wasm-proto/kernel2.c` driven by
+`src/wasm-session.ts` — takes over automatically for fully-local indexes,
+worth 1.2–1.3x on heavy anagrams; the JS engine remains the reference
+implementation, the fallback, and the range-mode engine.)
 Deploy the built site to any static host (GitHub Pages, S3, nginx `root`,
 `python -m http.server`, …) and it works.
 
@@ -41,7 +45,8 @@ work with the C++ binaries (verified byte-for-byte in CI tests).
   score, computation limit with "Try harder »").
 - `cli/` — Node ports of the upstream binaries: `find-expr`, `make-index`,
   `merge-indexes`, `dump-index`, plus `wordlist-index` (build an index from
-  frequency wordlists, used for the bundled demo index).
+  frequency wordlists, used for the bundled demo index) and `compress-index`
+  (build the `.idxz` sidecar the web deploy serves next to each index).
 
 ## Develop
 
@@ -83,26 +88,32 @@ find text -type f | xargs cat | npm run make-index -- wikipedia
 npm run merge-indexes -- 5 wikipedia.*.index wiki-merged.index
 ```
 
-## Measured performance (2026-08-14 baseline)
+## Measured performance (2026-08-15 baseline)
 
-Production, cold browser context, first result on screen:
+Production, cold browser context, first result on screen: **0.3–0.8 s on
+every bundled index** — all 13 Wikipedias (1.3 GB English down to 88 MB
+Turkish), Simple English, and the web-words demo, each probed with a
+native-language query (`scripts/prod-matrix.mjs` for the full table).
 
-| Index | Query | Cold first result |
+Constrained networks (CDP emulation, English index, cold):
+
+| Profile | First result | Full 150k-step page |
 |---|---|---|
-| English Wikipedia (1.3 GB, range mode) | `solar s_stem` | 0.4 s |
-| German Wikipedia (591 MB, range mode) | `brandenburger A+` | 0.4 s |
-| Simple English (41 MB, range mode) | `solar s_stem` | 0.3 s |
-| web words (20 MB, range mode) | `n[aeiou]tr[aeiou]m_tic` | 0.7 s |
+| 2 Mbps / 150 ms RTT | 13.2 s | 327 s |
+| 8 Mbps / 300 ms RTT | 4.9 s | 89 s |
 
 Heavy anagram (`<aciimnrttu>`, English index): ~5 s cold range mode,
 ~2 s from a device-stored (OPFS) copy including page load, 0.1 s warm
-revisit. Engine: 1.4–3.4M steps/s in-memory; a 500k-step, 100k-result
-search costs ~7 MB of heap. Whole-index download: 1.3 GB transferred as
-785 MB compressed in ~30 s on fast links. Compressed range transport
-(`.idxz` sidecars) cuts per-query transfer 31–39%.
+revisit. Engine: 1.3–3.5M steps/s in-memory (JS; the WASM kernel adds
+1.2–1.3x on heavy anagrams for fully-local indexes); a 500k-step,
+100k-result search costs ~7 MB of heap. Whole-index download: 1.3 GB
+transferred as 785 MB compressed in ~30 s on fast links, cancellable.
+Compressed range transport (`.idxz` sidecars) cuts per-query transfer
+31–39%.
 
-Regenerate: `node scripts/bench-all.mjs` (engine + fixtures) and
-`node scripts/prod-matrix.mjs` (live site).
+Regenerate: `node scripts/bench-all.mjs` (engine + fixtures),
+`node scripts/prod-matrix.mjs` (live site, all indexes), and
+`node scripts/throttle-matrix.mjs` (bandwidth emulation).
 
 ## Server caching headers
 
@@ -115,9 +126,10 @@ managed by the app's own Cache Storage layer.
 
 ## Deploying with a big index
 
-Indexes up to 64 MB are downloaded into memory. Above that the app switches
+Indexes up to 4 MB are downloaded into memory. Above that the app switches
 to Range mode and fetches only the trie nodes a query actually touches
-(64 KB chunks, LRU-cached). Requirements for the index host:
+(32 KB chunks, LRU-cached), unless a full copy is already on the device.
+Requirements for the index host:
 
 - HTTP Range request support (any real static file server has this).
 - CORS headers if the index lives on a different origin than the page

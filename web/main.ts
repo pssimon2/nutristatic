@@ -10,9 +10,19 @@ const PER_RUN_RESULTS = 1000;
 
 const BUNDLED_INDEXES: Array<[string, string]> = [
   ["./en-wiki.index", "English Wikipedia (1.3 GB)"],
-  ["./de-wiki.index", "German Wikipedia (Deutsch)"],
-  ["./it-wiki.index", "Italian Wikipedia (Italiano)"],
-  ["./simple-wiki.index", "Simple English Wikipedia (43 MB)"],
+  ["./de-wiki.index", "German Wikipedia – Deutsch (591 MB)"],
+  ["./it-wiki.index", "Italian Wikipedia – Italiano (360 MB)"],
+  ["./fr-wiki.index", "French Wikipedia – Français (491 MB)"],
+  ["./es-wiki.index", "Spanish Wikipedia – Español (436 MB)"],
+  ["./pt-wiki.index", "Portuguese Wikipedia – Português (255 MB)"],
+  ["./nl-wiki.index", "Dutch Wikipedia – Nederlands (222 MB)"],
+  ["./pl-wiki.index", "Polish Wikipedia – Polski (216 MB)"],
+  ["./sv-wiki.index", "Swedish Wikipedia – Svenska (199 MB)"],
+  ["./ca-wiki.index", "Catalan Wikipedia – Català (173 MB)"],
+  ["./id-wiki.index", "Indonesian Wikipedia – Bahasa Indonesia (123 MB)"],
+  ["./cs-wiki.index", "Czech Wikipedia – Čeština (113 MB)"],
+  ["./tr-wiki.index", "Turkish Wikipedia – Türkçe (88 MB)"],
+  ["./simple-wiki.index", "Simple English Wikipedia (41 MB)"],
   ["./demo.index", "web words + bigrams (20 MB)"],
 ];
 const DEFAULT_INDEX = BUNDLED_INDEXES[0][0];
@@ -102,18 +112,35 @@ for (const [query, text] of EXAMPLES) {
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   type: "module",
 });
+// Without these, a worker that fails to boot (old browser, CSP, a stale
+// asset after a redeploy) leaves the page silently stuck on "loading".
+worker.onerror = (e) => {
+  setStatus(`worker failed: ${e.message || "could not load search engine"}`, true);
+};
+worker.onmessageerror = () => {
+  setStatus("worker message error (please reload)", true);
+};
 
 let indexReady = false;
 let indexMode: "memory" | "range" = "memory";
 let pendingQuery: string | null = null;
-let searching = false;
+let downloading = false; // an explicit whole-index download is in flight
+let deviceCopy = false; // the loaded index is a device (OPFS) copy
+let downloadBytes = 0; // actual transfer size of "download whole index"
 let resultCount = 0;
 let currentComp = MAX_COMPUTATION;
 
 const fmtMB = (b: number) => `${(b / 1048576).toFixed(1)} MB`;
+// Human size for labels: whole MB, switching to GB above ~1000 MB.
+const fmtSize = (b: number) =>
+  b >= 999.5 * 1048576
+    ? `${(b / 1073741824).toFixed(1)} GB`
+    : `${Math.round(b / 1048576)} MB`;
 
 function setStatus(text: string, isError = false): void {
-  statusEl.textContent = text;
+  // Text prefix on errors: color alone doesn't reach screen readers or
+  // color-blind users.
+  statusEl.textContent = isError ? `⚠ ${text}` : text;
   statusEl.className = isError ? "error" : "";
 }
 
@@ -148,7 +175,10 @@ function actionButton(label: string, onClick: () => void): HTMLButtonElement {
  * base letters (à→a, ñ→n, ç→c) with the œ→oe/æ→ae digraph exceptions.
  */
 function transliterate(query: string): string {
-  if (indexUrl.includes("de-wiki")) {
+  // Decide from the file name, not a substring of the whole URL (a custom
+  // URL merely containing "de-wiki" in its path must not get German rules).
+  const basename = new URL(indexUrl).pathname.split("/").pop() ?? "";
+  if (/^de[-_.]/.test(basename)) {
     return query
       .replace(/[äÄ]/g, "ae")
       .replace(/[öÖ]/g, "oe")
@@ -174,7 +204,6 @@ function startSearch(query: string): void {
   currentComp =
     parseInt(params.get("comp") || "", 10) ||
     (indexMode === "range" ? RANGE_COMPUTATION : MAX_COMPUTATION);
-  searching = true;
   setStatus("searching…");
   worker.postMessage({
     type: "search",
@@ -187,7 +216,6 @@ function startSearch(query: string): void {
 function tryHarder(): void {
   currentComp *= 2;
   afterEl.textContent = "";
-  searching = true;
   setStatus("searching harder…");
   worker.postMessage({
     type: "continue",
@@ -198,7 +226,6 @@ function tryHarder(): void {
 
 function moreResults(): void {
   afterEl.textContent = "";
-  searching = true;
   setStatus("fetching more results…");
   worker.postMessage({
     type: "continue",
@@ -221,16 +248,34 @@ worker.onmessage = (ev) => {
       break;
     case "ready":
       indexReady = true;
+      downloading = false;
+      deviceCopy = msg.mode === "disk";
       indexMode = msg.mode === "range" ? "range" : "memory";
+      // Flag device copies so the next page load skips the early sidecar
+      // table fetch (see the inline <head> script).
+      try {
+        if (msg.mode === "disk") {
+          localStorage.setItem(`nutristatic-disk:${indexUrl}`, "1");
+        } else {
+          localStorage.removeItem(`nutristatic-disk:${indexUrl}`);
+        }
+      } catch {
+        // no localStorage (private mode): purely an optimization
+      }
       if (msg.mode === "disk") {
-        indexInfo.textContent = `${fmtMB(msg.bytes)} on device storage`;
-        dlFull.hidden = true;
+        indexInfo.textContent = `${fmtSize(msg.bytes)} on device storage`;
+        dlFull.textContent = "remove device copy »";
+        dlFull.disabled = false;
+        dlFull.hidden = false;
       } else if (msg.mode === "memory") {
-        indexInfo.textContent = `${fmtMB(msg.bytes)} in memory${msg.cached ? " (from cache)" : ""}`;
+        indexInfo.textContent = `${fmtSize(msg.bytes)} in memory${msg.cached ? " (from cache)" : ""}`;
         dlFull.hidden = true;
       } else {
-        indexInfo.textContent = `${fmtMB(msg.bytes)}, loading only what's needed`;
-        dlFull.textContent = `download whole index (${fmtMB(msg.bytes)}) »`;
+        indexInfo.textContent = `${fmtSize(msg.bytes)}, loading only what's needed`;
+        // Show what the download actually transfers (compressed sidecar),
+        // not the uncompressed index size.
+        downloadBytes = msg.downloadBytes ?? msg.bytes;
+        dlFull.textContent = `download whole index (${fmtSize(downloadBytes)}) »`;
         dlFull.disabled = false;
         dlFull.hidden = false;
       }
@@ -250,11 +295,20 @@ worker.onmessage = (ev) => {
       }
       break;
     case "parse-error":
-      searching = false;
       setStatus(`can't parse "${msg.rest}"`, true);
       break;
+    case "download-error": {
+      // The index that was loaded before the download is still usable; a
+      // "ready" re-post follows and restores the rest of the UI state.
+      downloading = false;
+      const cancelled = /cancel/i.test(msg.message);
+      setStatus(cancelled ? "download cancelled" : `download failed: ${msg.message}`, !cancelled);
+      // A real failure must stay readable: don't let the auto-restarted
+      // search overwrite it in the same tick (the user can just resubmit).
+      if (!cancelled) pendingQuery = null;
+      break;
+    }
     case "error":
-      searching = false;
       setStatus(`error: ${msg.message}`, true);
       if (!indexReady) {
         // Index load failed (flaky connection?): offer a clean retry.
@@ -272,8 +326,10 @@ worker.onmessage = (ev) => {
       }
       break;
     case "done":
-      searching = false;
       setStatus("");
+      if (msg.engine === "wasm" && !indexInfo.textContent!.includes("WASM")) {
+        indexInfo.textContent += " · WASM engine";
+      }
       if (msg.status === "exhausted") {
         afterEl.textContent =
           resultCount > 0 ? "No more results found." : "No results found, sorry.";
@@ -290,7 +346,7 @@ worker.onmessage = (ev) => {
           // a downloaded copy runs them at full speed.
           afterEl.append(
             actionButton(
-              `or download the index once (${dlFull.textContent!.match(/\(([^)]+)\)/)?.[1] ?? ""}) for much faster searching »`,
+              `or download the index once (${fmtSize(downloadBytes)}) for much faster searching »`,
               startFullDownload,
             ),
           );
@@ -318,9 +374,10 @@ $("setindex").addEventListener("click", () => {
 });
 
 function startFullDownload(): void {
+  if (downloading) return;
   // Cancels any running search; the current query re-runs once downloaded.
-  dlFull.disabled = true;
-  searching = false;
+  downloading = true;
+  dlFull.textContent = "cancel download »";
   const q = qInput.value.trim();
   if (q && !resultsView.hidden) pendingQuery = q;
   setStatus("");
@@ -329,7 +386,23 @@ function startFullDownload(): void {
   worker.postMessage({ type: "download-full" });
 }
 
-dlFull.addEventListener("click", startFullDownload);
+dlFull.addEventListener("click", () => {
+  if (downloading) {
+    worker.postMessage({ type: "cancel-download" });
+  } else if (deviceCopy) {
+    // Free the device copy and fall back to network mode. Any running query
+    // is cancelled by the reopen; re-run it once the index is back.
+    const q = qInput.value.trim();
+    if (q && !resultsView.hidden) pendingQuery = q;
+    indexReady = false;
+    dlFull.disabled = true;
+    setStatus("");
+    afterEl.textContent = ""; // old Try-harder buttons target a dead session
+    worker.postMessage({ type: "remove-copy" });
+  } else {
+    startFullDownload();
+  }
+});
 
 function applyQuery(query: string): void {
   if (query) {

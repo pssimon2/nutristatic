@@ -114,7 +114,7 @@ export class ExprFilter implements Filter {
     if (existing !== undefined) return existing;
 
     const id = this.members.length;
-    if (id >= MAX_STATES) throw new Error("pattern too complex");
+    if (id >= MAX_STATES) throw new Error(`pattern too complex (over ${MAX_STATES} lazy DFA states)`);
     this.setIds.set(key, id);
     this.members.push(sorted);
     let acc = 0;
@@ -226,7 +226,7 @@ export class ProductFilter implements Filter {
     }
 
     const id = this.count;
-    if (id >= MAX_STATES) throw new Error("pattern too complex");
+    if (id >= MAX_STATES) throw new Error(`pattern too complex (over ${MAX_STATES} lazy DFA states)`);
     if ((id + 1) * this.width > this.pool.length) {
       const grown = new Int32Array(
         Math.max(256 * this.width, this.pool.length * 2),

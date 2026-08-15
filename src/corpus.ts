@@ -3,6 +3,12 @@
 // then emit sliding windows of up to 40 characters, one starting at each word
 // boundary. Feeding these windows into IndexWriter with count 1 builds the
 // phrase-frequency trie.
+//
+// Known (accepted) divergences from upstream's fgets-based reader: lines
+// longer than 64KB are windowed continuously here where upstream restarts at
+// each 64KB buffer boundary; a final unterminated line still gets the
+// synthetic separator; and readline splits on lone \r. All only affect
+// pathological corpus lines, not the Wikipedia pipeline output.
 
 export const HISTORY_WINDOW_SIZE = 40;
 

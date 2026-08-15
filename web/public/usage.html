@@ -3,6 +3,8 @@
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    /* Match the search page: follow the OS theme. */
+    :root { color-scheme: light dark; }
     body > * { margin-left: 30pt; }
     body > ul { margin-left: 15pt; }
     body > h3, body > h4 { margin-left: 15pt; }
@@ -73,11 +75,12 @@ you search. For the full experience you can press
 <em>faster</em> than nutrimatic.org.</p>
 
 <li><p><b>Several indexes, switchable.</b> Use the picker at the bottom of
-the search page: full English Wikipedia, Simple English Wikipedia (small
-and fast to warm up), a web-corpus word/bigram list, and (soon) German
-Wikipedia. You can also point it at any Nutrimatic-format index file hosted
-anywhere via a custom URL — the file format is byte-compatible with
-upstream's tools.</p>
+the search page: thirteen Wikipedias (English, German, French, Spanish,
+Italian, Portuguese, Dutch, Polish, Swedish, Catalan, Indonesian, Czech,
+Turkish), Simple English Wikipedia (small and fast to warm up), and a
+web-corpus word/bigram list. You can also point it at any Nutrimatic-format
+index file hosted anywhere via a custom URL — the file format is
+byte-compatible with upstream's tools.</p>
 
 <li><p><b>Big anagrams and intersections usually work.</b> Nutrimatic
 compiles the whole pattern to a state machine up front, which explodes for
@@ -119,10 +122,11 @@ no longer phrases, so multi-word splicing is limited).
 <li><b>German Wikipedia</b> — built from the August 2026 dewiki dump;
 umlauts stored as ae/oe/ue/ss (matching German puzzle convention), and the
 search box transliterates ä/ö/ü/ß in queries automatically.
-<li><b>Italian, Dutch, Spanish and French Wikipedia</b> — August 2026
-dumps. Diacritics fold to base letters (à→a, ñ→n, ç→c; œ→oe and æ→ae per
-French convention), the usual convention in those languages' crosswords;
-the search box applies the same folding to whatever you type.
+<li><b>French, Spanish, Italian, Portuguese, Dutch, Polish, Swedish,
+Catalan, Indonesian, Czech and Turkish Wikipedia</b> — August 2026 dumps.
+Diacritics fold to base letters (à→a, ñ→n, ç→c, ł→l, ı→i; œ→oe and æ→ae
+per French convention), the usual convention in those languages'
+crosswords; the search box applies the same folding to whatever you type.
 </ul>
 
 <h2><a name="syntax">Pattern Language Syntax</a></h2>

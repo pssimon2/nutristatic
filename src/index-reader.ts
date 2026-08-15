@@ -156,13 +156,24 @@ export class IndexReader {
   static async open(source: ByteSource): Promise<IndexReader> {
     const reader = new IndexReader(source, 0);
     // Scan the top-level nodes to compute the total count, descending through
-    // single-child chain nodes that carry no count of their own.
+    // single-child chain nodes that carry no count of their own. A parse
+    // failure here means the bytes aren't an index at all (e.g. an HTML 404
+    // page served with status 200) — say so instead of "bad size at pos N".
     let top: Choice[] = [];
-    await reader.children(reader.root(), 0, top);
-    while (top.length === 1 && top[0].count === 0) {
-      const node = top[0].next;
-      top = [];
-      await reader.children(node, 0, top);
+    try {
+      await reader.children(reader.root(), 0, top);
+      while (top.length === 1 && top[0].count === 0) {
+        const node = top[0].next;
+        top = [];
+        await reader.children(node, 0, top);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("index error:")) {
+        throw new Error(
+          "this doesn't look like a Nutrimatic index (is the URL right?)",
+        );
+      }
+      throw e;
     }
     let total = 0;
     for (const c of top) total += c.count;
