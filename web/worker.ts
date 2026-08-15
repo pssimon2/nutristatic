@@ -183,6 +183,11 @@ let wasmBroken = false; // this environment can't run the kernel: stop trying
 let memBytes: Uint8Array | null = null; // index bytes when in memory mode
 let currentQuery: string | null = null;
 let emitted = new Set<string>(); // texts posted for the current query
+// Steps already executed on an engine that was discarded mid-search (the WASM
+// kernel overflowing its frontier cap and replaying on the JS engine). Added
+// to the live session's steps so the progress counter never jumps backwards.
+// Reset when a new query starts; carried across "continue" runs of one query.
+let searchStepBase = 0;
 
 function getWasmModule(): Promise<WebAssembly.Module> {
   // fetch + compile (not instantiateStreaming): no reliance on the server
@@ -1392,7 +1397,7 @@ async function runSession(
     if (token !== runToken) return; // superseded: stop talking to the UI
     post({
       type: "progress",
-      steps,
+      steps: searchStepBase + steps,
       engine: engineOf(active),
       fetched: rangeSource?.bytesFetched,
       requests: rangeSource?.requests,
@@ -1427,6 +1432,9 @@ async function runSession(
       // engine. Identical score-streams mean the replay regenerates exactly
       // the results already posted; suppress those.
       if (!(e instanceof WasmCapacityError)) wasmBroken = true;
+      // Carry the overflowed kernel's step count forward so the progress
+      // counter continues instead of resetting to zero on the replay.
+      searchStepBase += active.steps;
       const js = new SearchSession(reader, currentQuery, undefined, {
         prefetchDepth: rangeSource ? PREFETCH_DEPTH : 0,
       });
@@ -1450,7 +1458,7 @@ async function runSession(
     post({
       type: "done",
       status, // "limit" (step budget), "results" (page full), "exhausted"
-      steps: active.steps,
+      steps: searchStepBase + active.steps,
       engine: engineOf(active),
       fetched: rangeSource?.bytesFetched,
       requests: rangeSource?.requests,
@@ -1489,6 +1497,7 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
         const token = ++runToken;
         currentQuery = msg.query;
         emitted = new Set();
+        searchStepBase = 0; // fresh query: no discarded-engine steps yet
         session = null;
         const wasmEligible =
           !wasmBroken &&
