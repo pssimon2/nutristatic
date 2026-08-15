@@ -1,0 +1,80 @@
+<html><head>
+  <title>Nutristatic Indexes</title>
+  <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    /* Match the rest of the site: plain, left-aligned, follows the OS theme. */
+    :root { color-scheme: light dark; }
+    body > * { margin-left: 30pt; }
+    body > h1, body > h2, body > hr { margin-left: 0pt; }
+    body > p, body > table, body > ul { max-width: 42em; }
+    table { border-collapse: collapse; margin: 0.6em 0 1em; }
+    th, td { text-align: left; padding: 0.25em 1.4em 0.25em 0; vertical-align: baseline; }
+    th { font-weight: normal; font-size: 0.85em; letter-spacing: 0.03em;
+         text-transform: uppercase; color: #888; border-bottom: 1px solid #bbb; }
+    td.size { font-variant-numeric: tabular-nums; white-space: nowrap; color: #666; }
+    td .native { color: #888; }
+    .note { font-size: 0.9em; color: #777; }
+    tt { font-size: 0.95em; }
+  </style>
+</head><body>
+
+<h1><a href="/">Nutristatic</a> Indexes</h1>
+
+<p>These are the prebuilt phrase-frequency indexes — the very files the search runs on.
+Download one to search <b>offline</b>: open the
+<a href="./nutristatic-offline.html" download>offline version</a>, then pick the
+<tt>.index</tt> file you downloaded. You can also point the web app at any of them with a
+custom URL, or host them yourself.</p>
+
+<h2>Available indexes</h2>
+
+<table>
+  <tr><th>Index</th><th>Size</th><th></th></tr>
+  <tr><td>English Wikipedia</td><td class="size">1.3 GB</td><td><a href="./en-wiki.index" download>download</a></td></tr>
+  <tr><td>German Wikipedia <span class="native">(Deutsch)</span></td><td class="size">591 MB</td><td><a href="./de-wiki.index" download>download</a></td></tr>
+  <tr><td>French Wikipedia <span class="native">(Français)</span></td><td class="size">491 MB</td><td><a href="./fr-wiki.index" download>download</a></td></tr>
+  <tr><td>Spanish Wikipedia <span class="native">(Español)</span></td><td class="size">436 MB</td><td><a href="./es-wiki.index" download>download</a></td></tr>
+  <tr><td>Italian Wikipedia <span class="native">(Italiano)</span></td><td class="size">360 MB</td><td><a href="./it-wiki.index" download>download</a></td></tr>
+  <tr><td>Portuguese Wikipedia <span class="native">(Português)</span></td><td class="size">255 MB</td><td><a href="./pt-wiki.index" download>download</a></td></tr>
+  <tr><td>Dutch Wikipedia <span class="native">(Nederlands)</span></td><td class="size">222 MB</td><td><a href="./nl-wiki.index" download>download</a></td></tr>
+  <tr><td>Polish Wikipedia <span class="native">(Polski)</span></td><td class="size">216 MB</td><td><a href="./pl-wiki.index" download>download</a></td></tr>
+  <tr><td>Swedish Wikipedia <span class="native">(Svenska)</span></td><td class="size">199 MB</td><td><a href="./sv-wiki.index" download>download</a></td></tr>
+  <tr><td>Catalan Wikipedia <span class="native">(Català)</span></td><td class="size">173 MB</td><td><a href="./ca-wiki.index" download>download</a></td></tr>
+  <tr><td>Indonesian Wikipedia <span class="native">(Bahasa Indonesia)</span></td><td class="size">123 MB</td><td><a href="./id-wiki.index" download>download</a></td></tr>
+  <tr><td>Czech Wikipedia <span class="native">(Čeština)</span></td><td class="size">113 MB</td><td><a href="./cs-wiki.index" download>download</a></td></tr>
+  <tr><td>Turkish Wikipedia <span class="native">(Türkçe)</span></td><td class="size">88 MB</td><td><a href="./tr-wiki.index" download>download</a></td></tr>
+  <tr><td>Simple English Wikipedia</td><td class="size">41 MB</td><td><a href="./simple-wiki.index" download>download</a></td></tr>
+  <tr><td>web words + bigrams <span class="native">(demo)</span></td><td class="size">20 MB</td><td><a href="./demo.index" download>download</a></td></tr>
+</table>
+
+<p class="note">Each index also has a compressed <tt>.idxz</tt> sidecar (roughly half the
+size) used for range-mode self-hosting — append <tt>.idxz</tt> to any download link. You do
+<b>not</b> need it for offline search; the <tt>.index</tt> file is enough.</p>
+
+<h2>Sources &amp; licensing</h2>
+
+<ul>
+  <li><b>Wikipedia indexes</b> — built from the August 2026 Wikipedia database dumps. The
+  article text is written by Wikipedia's contributors and is available under the
+  <a href="https://creativecommons.org/licenses/by-sa/4.0/">Creative Commons
+  Attribution-ShareAlike 4.0 License</a> (CC BY-SA 4.0). These indexes are word- and
+  phrase-frequency data derived from that text, and are shared under the same license.
+  Attribution: Wikipedia contributors; dumps from
+  <a href="https://dumps.wikimedia.org/">dumps.wikimedia.org</a>. Diacritics are folded to
+  their base letters (and German umlauts to ae/oe/ue/ss) — see the
+  <a href="./usage.html#indexes">usage guide</a> for the exact conventions.</li>
+
+  <li><b>web words + bigrams</b> (the demo index) — built from Peter Norvig's
+  <a href="https://norvig.com/ngrams/">ngram frequency lists</a>, themselves derived from the
+  Google Web Trillion Word Corpus. Single words and two-word phrases only.</li>
+
+  <li><b>Index format &amp; search engine</b> — a serverless rewrite of Dan Egnor's
+  <a href="https://nutrimatic.org/">Nutrimatic</a>; the index format is byte-compatible with
+  its tools. The Nutristatic code is open source under the GPL-2.0 license.</li>
+</ul>
+
+<hr>
+<p><a href="/">« Back to search</a></p>
+
+</body></html>

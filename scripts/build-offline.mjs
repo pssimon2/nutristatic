@@ -77,9 +77,10 @@ html = html.replace(/\n?\s*<script>[\s\S]*?__earlyIndex[\s\S]*?<\/script>/, "");
 html = html
   .replace("./nutritea-small.png", dataUri("web/public/nutritea-small.png", "image/png"))
   .replace('href="./favicon.ico"', `href="${dataUri("web/public/favicon.ico", "image/x-icon")}"`);
-// The usage-guide links have no local target offline; point them at the live
-// site so they work whenever the user happens to be online.
+// The usage-guide and index-download links have no local target offline;
+// point them at the live site so they work whenever the user is online.
 html = html.replace(/"\.\/usage\.html/g, '"https://nutristatic.org/usage.html');
+html = html.replace(/"\.\/indexes\.html/g, '"https://nutristatic.org/indexes.html');
 // Drop the "download the offline version" link — this IS that file.
 html = html.replace(/<li id="offlinelink">[\s\S]*?<\/li>/, "");
 // Swap the module <script src> for the inlined worker + main bundles.
