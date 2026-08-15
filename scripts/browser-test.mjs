@@ -79,6 +79,21 @@ await waitDone();
 console.log("reload first:", await page.$eval("#results span", (e) => e.textContent));
 await waitInfo("device storage");
 
+// Offline: with the app shell cached (service worker) and the index stored on
+// the device (OPFS), a full reload works with no network at all.
+await page.evaluate(() => navigator.serviceWorker.ready);
+await page.waitForFunction(async () =>
+  (await caches.keys()).some((k) => k.startsWith("nutristatic-shell-")),
+);
+await page.context().setOffline(true);
+await page.goto(base + "?index=./demo.index&q=" + encodeURIComponent("solar s_stem"));
+await waitInfo("device storage", 30000);
+await waitDone(30000);
+const offlineFirst = await page.$eval("#results span", (e) => e.textContent);
+console.log("offline reload first:", offlineFirst);
+if (offlineFirst !== "solar system") throw new Error("offline search failed");
+await page.context().setOffline(false);
+
 // Remove the device copy: back to range mode, query re-runs.
 await page.click("#dlfull");
 await waitInfo("loading only");

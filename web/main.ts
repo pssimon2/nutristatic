@@ -143,6 +143,17 @@ if (OFFLINE) {
 worker.onerror = (e) => {
   setStatus(`worker failed: ${e.message || "could not load search engine"}`, true);
 };
+
+// Cache the app shell so the site loads and searches run offline once an index
+// has been stored on the device. Not in the offline single-file build (no
+// server, and file:// forbids service workers).
+if (!OFFLINE && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {
+      // No offline shell caching (unsupported or blocked); the site still works.
+    });
+  });
+}
 worker.onmessageerror = () => {
   setStatus("worker message error (please reload)", true);
 };

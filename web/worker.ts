@@ -963,6 +963,25 @@ function parseEarlyProbe(probe: EarlyProbe): {
 // assignment — only the newest generation may touch globals or post.
 let openGen = 0;
 
+/**
+ * Open a completed device (OPFS) copy with NO network, using the size stored
+ * in its completion marker. Used offline, when the index can't be probed over
+ * the network. Returns the source + the marker's size/validator, or null if
+ * there is no usable complete copy.
+ */
+async function openOpfsOffline(
+  url: string,
+): Promise<{ source: SyncFileSource; size: number; validator: string | null } | null> {
+  const marker = parseOpfsMarker(await opfsReadMarker(url));
+  if (!marker || typeof marker.size !== "number") return null;
+  // Adopt the marker's validator so openOpfsIndex's staleness check (which
+  // would otherwise compare against the unreachable server) is a no-op.
+  currentValidator = marker.validator;
+  const source = await openOpfsIndex(url, marker.size);
+  if (!source) return null;
+  return { source, size: marker.size, validator: marker.validator };
+}
+
 async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   const gen = ++openGen;
   const stale = () => gen !== openGen;
@@ -976,14 +995,54 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   currentUrl = url;
   let probe = early?.probe ? parseEarlyProbe(early.probe) : null;
   if (!probe) {
-    const p = await HttpRangeSource.open(url, { fetchFn: retryFetch });
-    probe = {
-      length: p.length,
-      supportsRanges: p.supportsRanges,
-      validator: p.validator,
-    };
+    // Offline path: a completed device copy opens with no network at all. Try
+    // it first when the browser reports itself offline, and as a fallback if
+    // the network probe fails (server unreachable) with a copy on hand.
+    let off =
+      typeof navigator !== "undefined" && navigator.onLine === false
+        ? await openOpfsOffline(url)
+        : null;
+    if (!off) {
+      try {
+        const p = await HttpRangeSource.open(url, { fetchFn: retryFetch });
+        probe = {
+          length: p.length,
+          supportsRanges: p.supportsRanges,
+          validator: p.validator,
+        };
+      } catch (e) {
+        off = await openOpfsOffline(url);
+        if (!off) throw e; // no offline copy: surface the network error
+      }
+    }
+    if (off) {
+      if (stale()) {
+        off.source.close();
+        return;
+      }
+      currentSize = off.size;
+      currentValidator = off.validator;
+      const r = await IndexReader.open(off.source);
+      if (stale()) {
+        off.source.close();
+        return;
+      }
+      diskSource = off.source;
+      reader = r;
+      postReady({
+        type: "ready",
+        bytes: off.size,
+        mode: "disk",
+        cached: true,
+        total: r.count(),
+      });
+      return;
+    }
   }
   if (stale()) return;
+  // Unreachable: with no early probe we either set `probe` above or returned
+  // via the offline copy. Narrows the type and guards future refactors.
+  if (!probe) throw new Error("index unavailable");
   currentSize = probe.length;
   currentValidator = probe.validator;
 
