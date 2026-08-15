@@ -105,6 +105,13 @@ s/ŭ/u/g
 s/ű/u/g
 s/ĵ/j/g
 s/ĥ/h/g
+s/ŝ/s/g
+s/Ĉ/c/g
+s/Ĝ/g/g
+s/Ĥ/h/g
+s/Ĵ/j/g
+s/Ŝ/s/g
+s/Ŭ/u/g
 s/ŵ/w/g
 s/ŷ/y/g
 # Non-NFD-decomposable letters (Polish/Turkish/Nordic/Romanian).
