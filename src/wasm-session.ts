@@ -26,6 +26,10 @@ const P_CAP = 1 << 20; // product states per query
 const DFA_CAP = 16384; // lazy subset-DFA states per conjunct
 const POOL_CAP = 1 << 20; // subset-member pool per conjunct (u32s)
 const IO_BYTES = 16 + 512; // result mailbox: steps, len, score, text
+// Parse cache reservation (kernel.c PC_SLOTS/PC_MAX_ENTRIES/PC_POOL): slots
+// (2×2M×4) + entries (1M×16) + child pool (4M×13). Reserved address space,
+// physical pages only as the cache fills.
+const PARSE_CACHE_BYTES = 88 * 1024 * 1024;
 const PAGE = 65536;
 
 interface KernelExports {
@@ -143,6 +147,7 @@ export class WasmEngine {
         indexSize +
         F_CAP * 37 +
         C_CAP * 5 +
+        PARSE_CACHE_BYTES +
         NSYM +
         IO_BYTES +
         16 * 16,

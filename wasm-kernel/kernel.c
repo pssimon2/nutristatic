@@ -330,17 +330,107 @@ static f64 t_count[MAXCH];
 static u32 t_next[MAXCH];
 static u32 t_n;
 
+// ---- parse cache ----
+// Trie nodes are re-parsed every time the search reaches them via a different
+// filter state, so memoize the parsed children by node offset. The parse is
+// query-independent (the trie is immutable), so this cache is allocated once
+// and persists across queries on the loaded index. Cache on the second visit
+// (mark-then-insert) to avoid storing nodes seen only once. The `count` guard
+// mirrors the JS reader: a node's edge count is intrinsic, so it matches on
+// reuse, but a mismatch safely re-parses.
+#define PC_SLOTS (1u << 21)
+#define PC_MAX_ENTRIES (1u << 20)
+#define PC_POOL 4000000u
+static u32 *pc_key, *pc_val; // slots: key 0 = empty; val 0 = seen, else id+1
+static f64 *pc_cnt;          // per-entry count guard
+static u32 *pc_start, *pc_num;
+static u8 *pc_pch;
+static f64 *pc_pcnt;
+static u32 *pc_pnext;
+static u32 pc_nent, pc_pool_len, pc_used;
+
+static u32 pc_find(u32 off) {
+  u32 h = off * 2654435761u;
+  h ^= h >> 15;
+  u32 i = h & (PC_SLOTS - 1);
+  while (pc_key[i] != 0 && pc_key[i] != off) i = (i + 1) & (PC_SLOTS - 1);
+  return i;
+}
+
+static void pc_clear(void) {
+  for (u32 i = 0; i < PC_SLOTS; ++i) pc_key[i] = 0;
+  pc_nent = 0;
+  pc_pool_len = 0;
+  pc_used = 0;
+}
+
+static void pc_mark_seen(u32 key) {
+  if (pc_used >= PC_SLOTS - (PC_SLOTS >> 2)) pc_clear(); // keep load factor < 3/4
+  u32 slot = pc_find(key);
+  if (pc_key[slot] == 0) {
+    pc_key[slot] = key;
+    pc_val[slot] = 0;
+    ++pc_used;
+  }
+}
+
+static void parse_children_body(u32 n, u32 num);
+
 static void parse_children(u32 n, f64 count) {
   t_n = 0;
   if (n == NO_NODE) return;
+
+  const u32 key = n;
+  u32 slot = pc_find(key);
+  if (pc_key[slot] != 0 && pc_val[slot] != 0) {
+    u32 e = pc_val[slot] - 1;
+    if (pc_cnt[e] == count) { // cache hit
+      u32 s = pc_start[e], k = pc_num[e];
+      for (u32 i = 0; i < k; ++i) {
+        t_ch[i] = pc_pch[s + i];
+        t_count[i] = pc_pcnt[s + i];
+        t_next[i] = pc_pnext[s + i];
+      }
+      t_n = k;
+      return;
+    }
+  }
+
   u32 num = idx[--n];
   if (num >= 0x20 && num < 0x80) {
     t_ch[0] = (u8)num;
     t_count[0] = count;
     t_next[0] = n;
     t_n = 1;
-    return;
+  } else {
+    parse_children_body(n, num);
   }
+
+  // Cache management: first visit marks the node; second caches it.
+  if (pc_key[slot] == 0) {
+    pc_mark_seen(key);
+  } else if (pc_val[slot] == 0) {
+    if (pc_nent >= PC_MAX_ENTRIES || pc_pool_len + t_n > PC_POOL) {
+      pc_clear();
+      pc_mark_seen(key);
+    } else {
+      u32 e = pc_nent++;
+      pc_cnt[e] = count;
+      pc_start[e] = pc_pool_len;
+      pc_num[e] = t_n;
+      for (u32 i = 0; i < t_n; ++i) {
+        pc_pch[pc_pool_len + i] = t_ch[i];
+        pc_pcnt[pc_pool_len + i] = t_count[i];
+        pc_pnext[pc_pool_len + i] = t_next[i];
+      }
+      pc_pool_len += t_n;
+      pc_val[slot] = e + 1;
+    }
+  }
+}
+
+// Parse a multi-child node body (n points just past the num byte) into t_*.
+static void parse_children_body(u32 n, u32 num) {
   u32 count_size = num < 0xC0 ? 1 : num < 0xE0 ? 2 : 8;
   u32 offset_size = num < 0x20 ? 0 : num < 0xA0 ? 1 : num < 0xE0 ? 2 : 8;
   num &= 0x1F;
@@ -417,6 +507,19 @@ __attribute__((export_name("setup"))) void setup(u32 idx_ptr, u32 idx_len_,
   f_next = (u32 *)walloc(f_cap * 4);
   c_parent = (i32 *)walloc(c_cap * 4);
   c_ch = (u8 *)walloc(c_cap);
+  // Parse cache (persists across queries: allocated below the query heap
+  // mark, so heap_reset never touches it). walloc'd memory starts zeroed.
+  pc_key = (u32 *)walloc(PC_SLOTS * 4);
+  pc_val = (u32 *)walloc(PC_SLOTS * 4);
+  pc_cnt = (f64 *)walloc(PC_MAX_ENTRIES * 8);
+  pc_start = (u32 *)walloc(PC_MAX_ENTRIES * 4);
+  pc_num = (u32 *)walloc(PC_MAX_ENTRIES * 4);
+  pc_pch = (u8 *)walloc(PC_POOL);
+  pc_pcnt = (f64 *)walloc(PC_POOL * 8);
+  pc_pnext = (u32 *)walloc(PC_POOL * 4);
+  pc_nent = 0;
+  pc_pool_len = 0;
+  pc_used = 0;
 }
 
 // Reset per-query filter state; conjuncts get added afterwards.
