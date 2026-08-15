@@ -1,7 +1,6 @@
 #!/bin/bash
-# Generalized Wikipedia index build with bounded disk usage (parameterized
-# version of build-enwiki.sh; that script is left untouched because it may be
-# mid-run).
+# Generalized Wikipedia index build with bounded disk usage: read a dump,
+# clean markup, window into phrases, and merge shards with a frequency cutoff.
 #
 # usage: build-wiki.sh NAME DUMP OUT [FILTER]
 #   NAME    chunk/stage prefix (e.g. "dewiki")

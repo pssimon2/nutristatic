@@ -1,5 +1,5 @@
 {
-  "name": "nutrimatic-web",
+  "name": "nutristatic",
   "version": "0.1.0",
   "description": "Client-side rewrite of Nutrimatic: pattern search over a phrase-frequency index, no server-side code",
   "type": "module",
