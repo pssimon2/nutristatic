@@ -61,6 +61,12 @@
     /* Left-aligned like nutrimatic.org, not a centered column. */
     body { margin: 1em; }
     form { margin: 0.5em 0; }
+    /* Let each result's line height track its own font size (results range
+       from huge to tiny by score). line-height:0 on the container removes the
+       block "strut" that would otherwise impose a ~19px minimum on tiny
+       low-score results — matching nutrimatic.org's tight packing, which gets
+       it for free from quirks mode. */
+    #results { line-height: 0; }
     #results span { line-height: 1.15; }
     #status { color: #767676; }
     #status.error { color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
