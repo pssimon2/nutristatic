@@ -2,10 +2,13 @@
 // rendering of streamed results — mirroring the upstream CGI's pages, but
 // with the search running in a Web Worker in the visitor's browser.
 
-const MAX_COMPUTATION = 1000000; // steps, same default as upstream
-// In range mode every step can cost network bytes, so start with a smaller
-// budget; "Try harder" doubles from there as usual.
-const RANGE_COMPUTATION = 150000;
+const MAX_COMPUTATION = 1000000; // local step budget (same default as upstream)
+// Range mode: step count is a poor proxy for cost (a cached step is free, a
+// fetched step is a network round-trip), so cap on bytes fetched and elapsed
+// time instead. The step count is just a safety ceiling remotely.
+const RANGE_BYTE_BUDGET = 32 * 1024 * 1024; // ~32 MB fetched per run…
+const RANGE_TIME_MS = 20000; //               …or ~20 s, whichever comes first
+const RANGE_STEP_CEILING = 8000000;
 const PER_RUN_RESULTS = 1000;
 
 const BUNDLED_INDEXES: Array<[string, string]> = [
@@ -217,25 +220,42 @@ function transliterate(query: string): string {
     .replace(/[̀-ͯ]/g, "");
 }
 
+// The step/byte/time budget for one run, by mode. Range mode caps on bytes
+// and time (steps only ceiling); local caps on steps (comp).
+function runBudget(): { maxSteps: number; byteBudget: number; timeMs: number } {
+  if (indexMode === "range") {
+    return { maxSteps: RANGE_STEP_CEILING, byteBudget: RANGE_BYTE_BUDGET, timeMs: RANGE_TIME_MS };
+  }
+  return { maxSteps: currentComp, byteBudget: 0, timeMs: 0 };
+}
+
 function startSearch(query: string): void {
   resultsEl.textContent = "";
   afterEl.textContent = "";
   resultCount = 0;
-  // Read comp from the live URL (not the load-time snapshot) so back/forward
-  // through raised-budget entries picks up the right value.
+  // Local step budget from the live URL's comp (not the load-time snapshot) so
+  // back/forward through raised-budget entries picks up the right value.
   currentComp =
     parseInt(new URLSearchParams(location.search).get("comp") || "", 10) ||
-    (indexMode === "range" ? RANGE_COMPUTATION : MAX_COMPUTATION);
+    MAX_COMPUTATION;
   setStatus("searching…");
   worker.postMessage({
     type: "search",
     query: transliterate(query),
-    maxSteps: currentComp,
     maxResults: PER_RUN_RESULTS,
+    ...runBudget(),
   });
 }
 
 function tryHarder(): void {
+  afterEl.textContent = "";
+  if (indexMode === "range") {
+    // Range mode isn't step-budgeted; "keep searching" just runs another
+    // bytes/time window over the network from where it left off.
+    setStatus("searching…");
+    worker.postMessage({ type: "continue", maxResults: PER_RUN_RESULTS, ...runBudget() });
+    return;
+  }
   currentComp *= 2;
   // Reflect the raised budget in the URL like nutrimatic.org's ?comp=N, so
   // the "tried harder" state is shareable and reloadable. pushState (not
@@ -246,23 +266,14 @@ function tryHarder(): void {
     p.set("comp", String(currentComp));
     history.pushState(null, "", `?${p}`);
   }
-  afterEl.textContent = "";
   setStatus("searching harder…");
-  worker.postMessage({
-    type: "continue",
-    maxSteps: currentComp,
-    maxResults: PER_RUN_RESULTS,
-  });
+  worker.postMessage({ type: "continue", maxResults: PER_RUN_RESULTS, ...runBudget() });
 }
 
 function moreResults(): void {
   afterEl.textContent = "";
   setStatus("fetching more results…");
-  worker.postMessage({
-    type: "continue",
-    maxSteps: currentComp,
-    maxResults: PER_RUN_RESULTS,
-  });
+  worker.postMessage({ type: "continue", maxResults: PER_RUN_RESULTS, ...runBudget() });
 }
 
 worker.onmessage = (ev) => {
@@ -369,20 +380,31 @@ worker.onmessage = (ev) => {
         afterEl.textContent =
           resultCount > 0 ? "No more results found." : "No results found, sorry.";
       } else if (msg.status === "limit") {
-        afterEl.textContent = "Computation limit reached.";
-        afterEl.append(
-          actionButton(
-            currentComp > RANGE_COMPUTATION ? "Try even harder »" : "Try harder »",
-            tryHarder,
-          ),
-        );
-        if (indexMode === "range" && !dlFull.hidden) {
-          // Broad searches walk far more of the index than streaming suits;
-          // a downloaded copy runs them at full speed.
+        if (indexMode === "range") {
+          // Range mode stopped on its bytes/time budget: this query reaches
+          // deep into the index, which is slow to stream piece by piece. The
+          // real fix is a local copy — lead with that; keep-searching is the
+          // secondary option (each click fetches another window).
+          afterEl.textContent =
+            "This search reaches deep into the index — slow to stream over the network. ";
+          if (!dlFull.hidden) {
+            afterEl.append(
+              actionButton(
+                `Download it once (${fmtSize(downloadBytes)}) for instant results »`,
+                startFullDownload,
+              ),
+              document.createElement("br"),
+            );
+          }
+          afterEl.append(
+            actionButton("or keep searching over the network »", tryHarder),
+          );
+        } else {
+          afterEl.textContent = "Computation limit reached.";
           afterEl.append(
             actionButton(
-              `or download the index once (${fmtSize(downloadBytes)}) for much faster searching »`,
-              startFullDownload,
+              currentComp > MAX_COMPUTATION ? "Try even harder »" : "Try harder »",
+              tryHarder,
             ),
           );
         }

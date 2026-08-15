@@ -107,11 +107,17 @@ interface SearchMsg {
   query: string;
   maxSteps: number;
   maxResults: number;
+  // Range mode only: stop after this many bytes fetched or ms elapsed
+  // (0 = disabled). The real cost limiter remotely — steps are the ceiling.
+  byteBudget?: number;
+  timeMs?: number;
 }
 interface ContinueMsg {
   type: "continue";
   maxSteps: number;
   maxResults: number;
+  byteBudget?: number;
+  timeMs?: number;
 }
 interface StopMsg {
   type: "stop";
@@ -1062,6 +1068,8 @@ let activeRunSession: SearchSession | WasmSession | null = null;
 async function runSession(
   maxSteps: number,
   maxResults: number,
+  byteBudget: number,
+  timeMs: number,
   // The search handler captures its token at message receipt, so a slow
   // engine-creation await can't let an older query outrank a newer one.
   givenToken?: number,
@@ -1069,6 +1077,18 @@ async function runSession(
   if (!session) return;
   const token = givenToken ?? ++runToken;
   let active = session;
+  // Range-mode cost cap: stop after byteBudget bytes fetched or timeMs elapsed
+  // since this run began (steps are only the safety ceiling remotely). Not
+  // applied in memory/disk mode, where there is no fetch cost.
+  const rs = rangeSource;
+  const startBytes = rs?.bytesFetched ?? 0;
+  const startTime = Date.now();
+  const shouldStop =
+    rs && (byteBudget > 0 || timeMs > 0)
+      ? () =>
+          (byteBudget > 0 && rs.bytesFetched - startBytes >= byteBudget) ||
+          (timeMs > 0 && Date.now() - startTime >= timeMs)
+      : undefined;
   const engineOf = (s: typeof active) => (s instanceof WasmSession ? "wasm" : "js");
   const onProgress = (steps: number) => {
     if (token !== runToken) return; // superseded: stop talking to the UI
@@ -1094,7 +1114,7 @@ async function runSession(
   try {
     let status;
     try {
-      status = await active.run(maxSteps, maxResults, emit, onProgress, yieldCheck);
+      status = await active.run(maxSteps, maxResults, emit, onProgress, yieldCheck, shouldStop);
     } catch (e) {
       if (
         !(active instanceof WasmSession) ||
@@ -1125,6 +1145,7 @@ async function runSession(
         },
         onProgress,
         yieldCheck,
+        shouldStop,
       );
     }
     if (token !== runToken) return;
@@ -1210,7 +1231,7 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
           }
         }
         if (token !== runToken) return; // superseded during setup
-        await runSession(msg.maxSteps, msg.maxResults, token);
+        await runSession(msg.maxSteps, msg.maxResults, msg.byteBudget ?? 0, msg.timeMs ?? 0, token);
         break;
       }
       case "continue":
@@ -1223,7 +1244,7 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
         // run will answer. (A stale run of a REPLACED session doesn't match
         // and must not block — dropping here would hang the UI.)
         if (activeRunSession === session) break;
-        await runSession(msg.maxSteps, msg.maxResults);
+        await runSession(msg.maxSteps, msg.maxResults, msg.byteBudget ?? 0, msg.timeMs ?? 0);
         break;
       case "download-full": {
         ++runToken; // cancel any in-flight search run

@@ -39,6 +39,11 @@ export class SearchSession {
     onResult: (r: SearchResult) => void,
     onProgress?: (steps: number) => void,
     shouldYield?: () => void | Promise<void>,
+    // Optional early stop (range mode caps on bytes-fetched / wall-clock time
+    // rather than step count — a cached step is free, a fetched step is a
+    // round-trip, so steps are a poor cost proxy). Returns "limit" when it
+    // fires, so callers treat it like the step budget being hit.
+    shouldStop?: () => boolean,
   ): Promise<SessionStatus> {
     let results = 0;
     while (this.steps < maxSteps && results < maxResults) {
@@ -48,6 +53,7 @@ export class SearchSession {
         const y = shouldYield();
         if (y instanceof Promise) await y;
       }
+      if (shouldStop && this.steps % 2000 === 0 && shouldStop()) return "limit";
       let r = this.driver.step();
       if (r instanceof Promise) r = await r;
       if (r) {

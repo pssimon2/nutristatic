@@ -266,12 +266,16 @@ export class WasmSession {
     onResult: (r: SearchResult) => void,
     onProgress?: (steps: number) => void,
     shouldYield?: () => void | Promise<void>,
+    // Only ever set in range mode, where the JS engine runs; the WASM engine
+    // is used for fully-local indexes, so this is a no-op here in practice.
+    shouldStop?: () => boolean,
   ): Promise<SessionStatus> {
     if (this.exhausted) return "exhausted";
     let results = 0;
     let lastYield = this.steps;
     let lastProgress = Math.floor(this.steps / 100000);
     while (this.steps < maxSteps && results < maxResults) {
+      if (shouldStop && shouldStop()) return "limit";
       if (this.engine.owner !== this) {
         // The kernel was re-seeded for a newer query while this run was
         // parked at a yield; its state is gone. (The worker's cancellation
