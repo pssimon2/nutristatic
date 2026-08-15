@@ -57,6 +57,19 @@ await waitDone();
 await waitInfo("WASM engine", 10000);
 console.log("disk info:", await page.textContent("#indexinfo"));
 
+// The picker marks a downloaded index as available offline.
+await page.waitForFunction(() =>
+  [...document.getElementById("indexpick").options].some(
+    (o) => o.value === "./demo.index" && /on device/.test(o.textContent),
+  ),
+);
+console.log(
+  "picker offline tag:",
+  await page.$eval("#indexpick", (s) =>
+    [...s.options].find((o) => o.value === "./demo.index").textContent.trim(),
+  ),
+);
+
 // Interrupt race: heavy query, interrupt with light one, then continue.
 await page.fill("#q", "<aaeeiimnnorsttu>");
 await page.click("input[type=submit]");
@@ -99,6 +112,14 @@ await page.click("#dlfull");
 await waitInfo("loading only");
 await waitDone();
 console.log("after remove:", await page.textContent("#indexinfo"), "|", await page.textContent("#dlfull"));
+
+// Removing the copy clears the "on device" tag in the picker.
+await page.waitForFunction(() =>
+  [...document.getElementById("indexpick").options].every(
+    (o) => o.value !== "./demo.index" || !/on device/.test(o.textContent),
+  ),
+);
+console.log("picker tag cleared after remove");
 
 // Resumable download: interrupt a whole-index download partway, then resume.
 // Force the plain-range path (block the sidecar) so piece offsets are

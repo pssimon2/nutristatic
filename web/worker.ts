@@ -142,6 +142,9 @@ interface OpenFileMsg {
   file: Blob;
   name: string;
 }
+interface ListCopiesMsg {
+  type: "list-copies";
+}
 type InMsg =
   | OpenMsg
   | SearchMsg
@@ -150,7 +153,8 @@ type InMsg =
   | DownloadFullMsg
   | CancelDownloadMsg
   | RemoveCopyMsg
-  | OpenFileMsg;
+  | OpenFileMsg
+  | ListCopiesMsg;
 
 let reader: IndexReader | null = null;
 let rangeSource:
@@ -982,6 +986,43 @@ async function openOpfsOffline(
   return { source, size: marker.size, validator: marker.validator };
 }
 
+/**
+ * List the index URLs that have a complete device (OPFS) copy — i.e. the ones
+ * searchable fully offline. Enumerates the `.ok` completion markers and keeps
+ * those whose index file matches the marker's stored size.
+ */
+async function listOpfsCopies(): Promise<string[]> {
+  const urls: string[] = [];
+  try {
+    const root = await navigator.storage.getDirectory();
+    const markers: string[] = [];
+    for await (const name of (root as any).keys() as AsyncIterable<string>) {
+      if (name.startsWith("idx-") && name.endsWith(".ok")) markers.push(name);
+    }
+    for (const markerName of markers) {
+      const base = markerName.slice(0, -".ok".length); // idx-<encoded url>
+      let url: string;
+      try {
+        url = decodeURIComponent(base.slice("idx-".length));
+      } catch {
+        continue;
+      }
+      try {
+        const mk = parseOpfsMarker(await opfsReadMarker(url));
+        if (!mk || typeof mk.size !== "number") continue;
+        const fh = await root.getFileHandle(base).catch(() => null);
+        if (!fh) continue;
+        if ((await fh.getFile()).size === mk.size) urls.push(url);
+      } catch {
+        // skip an unreadable entry
+      }
+    }
+  } catch {
+    // OPFS unavailable
+  }
+  return urls;
+}
+
 async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
   const gen = ++openGen;
   const stale = () => gen !== openGen;
@@ -1549,6 +1590,9 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
       }
       case "stop":
         ++runToken;
+        break;
+      case "list-copies":
+        post({ type: "copies", urls: await listOpfsCopies() });
         break;
     }
   } catch (e) {

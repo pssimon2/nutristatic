@@ -71,7 +71,20 @@ for (const [value, label] of BUNDLED_INDEXES) {
   const opt = document.createElement("option");
   opt.value = value;
   opt.textContent = label;
+  opt.dataset.baseLabel = label; // preserved so the "on device" tag can toggle
   indexPick.append(opt);
+}
+
+// Tag the picker options that have a full copy stored on the device (searchable
+// offline), from the worker's list of completed OPFS copies.
+function annotateOfflineCopies(urls: Set<string>): void {
+  for (const opt of Array.from(indexPick.options)) {
+    if (opt.value === "custom" || !opt.dataset.baseLabel) continue;
+    const abs = new URL(opt.value, location.href).href;
+    opt.textContent = urls.has(abs)
+      ? `${opt.dataset.baseLabel} ✓ on device`
+      : opt.dataset.baseLabel;
+  }
 }
 {
   const custom = document.createElement("option");
@@ -361,6 +374,12 @@ worker.onmessage = (ev) => {
         pendingQuery = null;
         startSearch(q);
       }
+      // Refresh which indexes are marked available offline (a copy may have
+      // just been added or removed).
+      if (!OFFLINE) worker.postMessage({ type: "list-copies" });
+      break;
+    case "copies":
+      annotateOfflineCopies(new Set(msg.urls));
       break;
     case "result":
       addResult(msg.score, msg.text);
