@@ -52,6 +52,7 @@ const indexUrlInput = $<HTMLInputElement>("indexurl");
 const indexPick = $<HTMLSelectElement>("indexpick");
 const customRow = $("customrow");
 const dlFull = $<HTMLButtonElement>("dlfull");
+const dlRemove = $<HTMLButtonElement>("dlremove");
 
 const params = new URLSearchParams(location.search);
 // Resolve against the page URL: the worker would otherwise resolve relative
@@ -304,6 +305,7 @@ worker.onmessage = (ev) => {
       } catch {
         // no localStorage (private mode): purely an optimization
       }
+      dlRemove.hidden = true; // only shown alongside a resumable partial
       if (msg.mode === "local") {
         // Offline: index read from the picked local file, no server.
         indexInfo.textContent = `${offlineName} · ${fmtSize(msg.bytes)} (local file)`;
@@ -321,7 +323,16 @@ worker.onmessage = (ev) => {
         // Show what the download actually transfers (compressed sidecar),
         // not the uncompressed index size.
         downloadBytes = msg.downloadBytes ?? msg.bytes;
-        dlFull.textContent = `download whole index (${fmtSize(downloadBytes)}) »`;
+        if (msg.partial) {
+          // A prior whole-index download was interrupted: offer to resume it
+          // (or discard the partial) instead of starting over.
+          const pct = Math.min(99, Math.floor((msg.partial.loaded / msg.partial.total) * 100));
+          dlFull.textContent = `resume download (${pct}%) »`;
+          dlRemove.textContent = "discard partial »";
+          dlRemove.hidden = false;
+        } else {
+          dlFull.textContent = `download whole index (${fmtSize(downloadBytes)}) »`;
+        }
         dlFull.disabled = false;
         dlFull.hidden = false;
       }
@@ -439,6 +450,7 @@ function startFullDownload(): void {
   // Cancels any running search; the current query re-runs once downloaded.
   downloading = true;
   dlFull.textContent = "cancel download »";
+  dlRemove.hidden = true;
   const q = qInput.value.trim();
   if (q && !resultsView.hidden) pendingQuery = q;
   setStatus("");
@@ -446,6 +458,18 @@ function startFullDownload(): void {
   indexReady = false;
   worker.postMessage({ type: "download-full" });
 }
+
+// Discard a resumable partial download and return to plain range mode.
+dlRemove.addEventListener("click", () => {
+  const q = qInput.value.trim();
+  if (q && !resultsView.hidden) pendingQuery = q;
+  indexReady = false;
+  dlRemove.hidden = true;
+  dlFull.disabled = true;
+  setStatus("");
+  afterEl.textContent = "";
+  worker.postMessage({ type: "remove-copy" });
+});
 
 dlFull.addEventListener("click", () => {
   if (downloading) {

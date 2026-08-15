@@ -45,25 +45,30 @@ async function fetchPieces(
   size: number,
   write: (part: Uint8Array, offset: number) => void,
   signal?: AbortSignal,
+  done?: Array<[number, number]>,
+  markDone?: (s: number, e: number) => void,
 ): Promise<void> {
   let nextOffset = 0;
-  let loaded = 0;
+  let loaded = done ? coveredBytes(done) : 0;
+  if (loaded > 0) post({ type: "loading", mode: "download", bytes: size, loaded });
   const runner = async (): Promise<void> => {
     for (;;) {
       const off = nextOffset;
       if (off >= size) return;
       nextOffset += DOWNLOAD_PIECE;
-      const end = Math.min(off + DOWNLOAD_PIECE, size) - 1;
+      const end = Math.min(off + DOWNLOAD_PIECE, size);
+      if (done && rangeCovered(done, off, end)) continue; // already downloaded
       const part = await fetchBytesWithRetry(
         url,
-        { headers: { Range: `bytes=${off}-${end}` }, signal },
+        { headers: { Range: `bytes=${off}-${end - 1}` }, signal },
         4,
         PIECE_TIMEOUT,
       );
-      if (part.length !== end - off + 1) {
+      if (part.length !== end - off) {
         throw new Error(`short range response (${part.length} bytes at ${off})`);
       }
       write(part, off);
+      markDone?.(off, off + part.length);
       loaded += part.length;
       post({ type: "loading", mode: "download", bytes: size, loaded });
     }
@@ -381,6 +386,111 @@ async function opfsReadMarker(url: string): Promise<string | null> {
   }
 }
 
+// Persisted partial-download progress: which uncompressed byte ranges of the
+// index file a prior (interrupted) download already wrote, so the next attempt
+// resumes instead of restarting. Ranges are half-open [start, end), kept
+// sorted and non-overlapping. Path-independent: whether the bytes arrived via
+// the compressed sidecar or plain ranges, a covered range needs no re-fetch.
+interface OpfsProg {
+  size: number;
+  validator: string | null;
+  ranges: Array<[number, number]>;
+}
+
+function progName(url: string): string {
+  return opfsName(url) + ".prog";
+}
+
+async function opfsReadProg(url: string): Promise<OpfsProg | null> {
+  let text: string;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle(progName(url));
+    text = await (await handle.getFile()).text();
+  } catch {
+    return null;
+  }
+  try {
+    const p = JSON.parse(text);
+    if (
+      p &&
+      typeof p.size === "number" &&
+      Array.isArray(p.ranges) &&
+      p.ranges.every(
+        (r: unknown) =>
+          Array.isArray(r) &&
+          r.length === 2 &&
+          typeof r[0] === "number" &&
+          typeof r[1] === "number",
+      )
+    ) {
+      return { size: p.size, validator: p.validator ?? null, ranges: p.ranges };
+    }
+  } catch {
+    // corrupt record: treat as no progress
+  }
+  return null;
+}
+
+/** Insert [s, e) into a sorted, non-overlapping range list (mutates in place). */
+function addRange(ranges: Array<[number, number]>, s: number, e: number): void {
+  if (e <= s) return;
+  let i = 0;
+  while (i < ranges.length && ranges[i][1] < s) i++;
+  let ns = s;
+  let ne = e;
+  let j = i;
+  while (j < ranges.length && ranges[j][0] <= ne) {
+    ns = Math.min(ns, ranges[j][0]);
+    ne = Math.max(ne, ranges[j][1]);
+    j++;
+  }
+  ranges.splice(i, j - i, [ns, ne]);
+}
+
+/** True if [s, e) is fully covered by the sorted, non-overlapping list. */
+function rangeCovered(
+  ranges: Array<[number, number]>,
+  s: number,
+  e: number,
+): boolean {
+  if (e <= s) return true;
+  for (const [rs, re] of ranges) {
+    if (rs > s) break;
+    if (e <= re) return true;
+  }
+  return false;
+}
+
+function coveredBytes(ranges: Array<[number, number]>): number {
+  let n = 0;
+  for (const [s, e] of ranges) n += e - s;
+  return n;
+}
+
+/**
+ * Coverage of an unfinished download for this index, or null if there's no
+ * resumable partial (finished, absent, or stale). `loaded`/`total` are both
+ * uncompressed index bytes, so `loaded / total` is the fraction present.
+ */
+async function checkPartial(
+  url: string,
+  expectedSize: number,
+): Promise<{ loaded: number; total: number } | null> {
+  const marker = parseOpfsMarker(await opfsReadMarker(url));
+  const validatorOk = (v: string | null | undefined) =>
+    v == null || currentValidator == null || v === currentValidator;
+  if (marker != null && marker.size === expectedSize && validatorOk(marker.validator)) {
+    return null; // a finished copy exists
+  }
+  const prog = await opfsReadProg(url);
+  if (prog == null || prog.size !== expectedSize || !validatorOk(prog.validator)) {
+    return null;
+  }
+  const loaded = coveredBytes(prog.ranges);
+  return loaded > 0 ? { loaded, total: expectedSize } : null;
+}
+
 async function opfsWriteMarker(url: string, content: string): Promise<void> {
   const root = await navigator.storage.getDirectory();
   const handle = await root.getFileHandle(opfsOkName(url), { create: true });
@@ -399,6 +509,7 @@ async function opfsRemove(url: string): Promise<void> {
     const root = await navigator.storage.getDirectory();
     await root.removeEntry(opfsName(url)).catch(() => {});
     await root.removeEntry(opfsOkName(url)).catch(() => {});
+    await root.removeEntry(progName(url)).catch(() => {});
   } catch {
     // OPFS unavailable
   }
@@ -426,15 +537,26 @@ async function openOpfsIndex(
   try {
     const file = await handle.getFile();
     const marker = parseOpfsMarker(await opfsReadMarker(url));
-    const validatorStale =
-      marker?.validator != null &&
-      currentValidator != null &&
-      marker.validator !== currentValidator;
-    if (file.size !== expectedSize || marker?.size !== expectedSize || validatorStale) {
-      // Stale copy (the index was replaced on the server — caught by size,
-      // or by ETag/Last-Modified when the rebuild kept the same size) or an
-      // interrupted download that never wrote its completion marker.
-      await opfsRemove(url);
+    const validatorStale = (v: string | null | undefined) =>
+      v != null && currentValidator != null && v !== currentValidator;
+    const complete =
+      marker != null &&
+      marker.size === expectedSize &&
+      file.size === expectedSize &&
+      !validatorStale(marker.validator);
+    if (!complete) {
+      // No finished copy. If a matching progress record is present this is a
+      // resumable partial — leave the file in place for "resume download".
+      // Otherwise it's stale (the index was replaced on the server — caught by
+      // size, or by the ETag/Last-Modified validator on a same-size rebuild)
+      // or corrupt, so reclaim the space.
+      const prog = await opfsReadProg(url);
+      const resumable =
+        prog != null &&
+        prog.size === expectedSize &&
+        !validatorStale(prog.validator) &&
+        coveredBytes(prog.ranges) > 0;
+      if (!resumable) await opfsRemove(url);
       return null;
     }
     // The previous page's worker may not have released its lock yet right
@@ -467,42 +589,75 @@ async function downloadToOpfs(
   } catch {
     return null;
   }
+  const validator = currentValidator ?? null;
+  let progSync: any = null;
   try {
+    const root = await navigator.storage.getDirectory();
     // Invalidate any previous completion marker before touching the file
     // (the file itself stays: we hold its open handle).
+    await root.removeEntry(opfsOkName(url)).catch(() => {});
+
+    // Resume a prior interrupted download when its progress record still
+    // matches this exact index; otherwise start from an empty file. Read the
+    // record before opening a write handle on it (a handle would lock it).
+    const prior = await opfsReadProg(url);
+    const ranges: Array<[number, number]> =
+      prior && prior.size === size && prior.validator === validator
+        ? prior.ranges
+        : [];
+    if (ranges.length === 0) sync.truncate(0);
+
+    // Keep one handle open on the progress record for the whole download and
+    // rewrite it (it's tiny) after each completed piece, so a network drop or
+    // cancel leaves an accurate resume point behind. Best-effort: if the
+    // record can't be opened, the download still runs, just not resumably.
     try {
-      const root = await navigator.storage.getDirectory();
-      await root.removeEntry(opfsOkName(url)).catch(() => {});
+      const progHandle = await root.getFileHandle(progName(url), { create: true });
+      progSync = await (progHandle as any).createSyncAccessHandle();
     } catch {
-      // OPFS unavailable
+      progSync = null;
     }
-    sync.truncate(0);
-    const viaZ = await downloadViaSidecar(
-      url,
-      size,
-      (part, off) => sync.write(part, { at: off }),
-      signal,
-    );
+
+    const enc = new TextEncoder();
+    const persist = (): void => {
+      if (!progSync) return;
+      const json = enc.encode(JSON.stringify({ size, validator, ranges }));
+      progSync.truncate(0);
+      progSync.write(json, { at: 0 });
+      progSync.flush();
+    };
+    persist();
+    const markDone = progSync
+      ? (s: number, e: number): void => {
+          addRange(ranges, s, e);
+          persist();
+        }
+      : undefined;
+    const done = progSync ? ranges : undefined;
+    const write = (part: Uint8Array, off: number) => sync.write(part, { at: off });
+
+    const viaZ = await downloadViaSidecar(url, size, write, signal, done, markDone);
     if (!viaZ) {
-      await fetchPieces(
-        url,
-        size,
-        (part, off) => sync.write(part, { at: off }),
-        signal,
-      );
+      await fetchPieces(url, size, write, signal, done, markDone);
     }
     sync.flush();
-    await opfsWriteMarker(
-      url,
-      JSON.stringify({ size, validator: currentValidator }),
-    );
+    progSync.close();
+    progSync = null;
+    await root.removeEntry(progName(url)).catch(() => {});
+    await opfsWriteMarker(url, JSON.stringify({ size, validator }));
     return new SyncFileSource(sync as SyncFileReader, size);
   } catch (e) {
+    // Keep the partial file and its progress record so the next attempt
+    // resumes; just release the handles.
+    try {
+      progSync?.close();
+    } catch {
+      // best-effort
+    }
     try {
       sync.close();
-      await opfsRemove(url);
     } catch {
-      // best-effort cleanup
+      // best-effort
     }
     throw e;
   }
@@ -548,6 +703,8 @@ async function downloadViaSidecar(
   size: number,
   write: (part: Uint8Array, offset: number) => void,
   signal?: AbortSignal,
+  done?: Array<[number, number]>,
+  markDone?: (s: number, e: number) => void,
 ): Promise<boolean> {
   const sidecarUrl = url + ".idxz";
   try {
@@ -569,13 +726,29 @@ async function downloadViaSidecar(
     }
 
     const totalComp = table[header.numBlocks];
+    const bs = header.blockSize;
+    const spanRange = (s: number, e: number): [number, number] => [
+      s * bs,
+      Math.min(e * bs, size),
+    ];
     let nextSpan = 0;
     let loaded = 0;
+    if (done) {
+      // Count the compressed bytes of spans a prior attempt already wrote, so
+      // the progress bar resumes at the right point.
+      for (const [s, e] of spans) {
+        const [uStart, uEnd] = spanRange(s, e);
+        if (rangeCovered(done, uStart, uEnd)) loaded += table[e] - table[s];
+      }
+      if (loaded > 0) post({ type: "loading", mode: "download", bytes: totalComp, loaded });
+    }
     const runner = async (): Promise<void> => {
       for (;;) {
         const idx = nextSpan++;
         if (idx >= spans.length) return;
         const [s, e] = spans[idx];
+        const [uStart, uEnd] = spanRange(s, e);
+        if (done && rangeCovered(done, uStart, uEnd)) continue; // already have it
         const from = header.dataStart + table[s];
         const to = header.dataStart + table[e] - 1;
         const buf = await fetchBytesWithRetry(
@@ -600,6 +773,7 @@ async function downloadViaSidecar(
           );
         }
         await Promise.all(jobs);
+        markDone?.(uStart, uEnd);
         loaded += buf.length;
         post({ type: "loading", mode: "download", bytes: totalComp, loaded });
       }
@@ -918,6 +1092,8 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
     if (prewarm) prewarm.catch(() => {});
     const r = await IndexReader.open(src);
     if (stale()) return;
+    const partial = await checkPartial(url, probe.length);
+    if (stale()) return;
     rangeSource = src;
     reader = r;
     postReady({
@@ -931,6 +1107,8 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
         src instanceof CompressedRangeSource
           ? src.compressedSize
           : probe.length,
+      // A previously interrupted whole-index download that can be resumed.
+      partial: partial ?? undefined,
     });
   }
 }
@@ -1017,7 +1195,14 @@ async function downloadFull(): Promise<void> {
   downloadCtrl = new AbortController();
   const signal = downloadCtrl.signal;
   const gen = openGen; // a newer open supersedes this download's results
-  post({ type: "loading", bytes: currentSize, loaded: 0, mode: "download" });
+  // Show the actual transfer size up front (the compressed sidecar when one
+  // exists), so the progress denominator doesn't jump from uncompressed to
+  // compressed once the first chunk lands.
+  const initialTotal =
+    rangeSource instanceof CompressedRangeSource
+      ? rangeSource.compressedSize
+      : currentSize;
+  post({ type: "loading", bytes: initialTotal, loaded: 0, mode: "download" });
   try {
     const disk = await downloadToOpfs(currentUrl, currentSize, signal);
     if (gen !== openGen) {
@@ -1260,7 +1445,18 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
             type: "download-error",
             message: e instanceof Error ? e.message : String(e),
           });
-          if (lastReady) post(lastReady);
+          // Restore the pre-download UI, refreshing the resume point: a
+          // cancel or a mid-transfer network drop leaves a partial behind.
+          if (lastReady) {
+            const partial = currentUrl
+              ? await checkPartial(currentUrl, currentSize)
+              : null;
+            post(
+              typeof lastReady === "object" && lastReady !== null
+                ? { ...(lastReady as object), partial: partial ?? undefined }
+                : lastReady,
+            );
+          }
         }
         break;
       }

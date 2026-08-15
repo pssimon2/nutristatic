@@ -83,6 +83,37 @@ await waitInfo("loading only");
 await waitDone();
 console.log("after remove:", await page.textContent("#indexinfo"), "|", await page.textContent("#dlfull"));
 
+// Resumable download: interrupt a whole-index download partway, then resume.
+// Force the plain-range path (block the sidecar) so piece offsets are
+// predictable, and fail every piece at/after 8 MB on the first attempt.
+let allowAll = false;
+await page.route("**/demo.index.idxz*", (route) => route.abort());
+await page.route("**/demo.index", (route) => {
+  if (allowAll) return route.continue();
+  const m = /bytes=(\d+)-/.exec(route.request().headers().range || "");
+  const off = m ? +m[1] : 0;
+  return off >= 8 * 1024 * 1024 ? route.abort() : route.continue();
+});
+await page.click("#dlfull"); // start download -> fails past 8 MB -> partial kept
+await page.waitForFunction(
+  () => /resume download \(\d+%\)/.test(document.getElementById("dlfull").textContent),
+  null,
+  { timeout: 60000 },
+);
+const resumeLabel = await page.textContent("#dlfull");
+console.log("partial:", resumeLabel, "| discard:", await page.textContent("#dlremove"));
+if ((await page.getAttribute("#dlremove", "hidden")) !== null) {
+  throw new Error("discard-partial button not shown");
+}
+allowAll = true; // network back
+await page.click("#dlfull"); // resume from the partial -> completes to disk
+await waitInfo("device storage");
+console.log("after resume:", await page.textContent("#indexinfo"));
+await page.unroute("**/demo.index");
+await page.unroute("**/demo.index.idxz*");
+await page.click("#dlfull"); // clean up the device copy
+await waitInfo("loading only");
+
 // Parse error.
 await page.goto(base + "?index=./demo.index&q=" + encodeURIComponent("((("));
 await page.waitForFunction(
