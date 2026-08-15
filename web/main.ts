@@ -147,6 +147,7 @@ let offlineName = ""; // picked index file name (offline mode)
 let pendingQuery: string | null = null;
 let downloading = false; // an explicit whole-index download is in flight
 let deviceCopy = false; // the loaded index is a device (OPFS) copy
+let deviceCopyBytes = 0; // on-device size of that copy (for the delete prompt)
 let downloadBytes = 0; // actual transfer size of "download whole index"
 let resultCount = 0;
 let currentComp = MAX_COMPUTATION;
@@ -311,6 +312,7 @@ worker.onmessage = (ev) => {
         indexInfo.textContent = `${offlineName} · ${fmtSize(msg.bytes)} (local file)`;
         dlFull.hidden = true;
       } else if (msg.mode === "disk") {
+        deviceCopyBytes = msg.bytes;
         indexInfo.textContent = `${fmtSize(msg.bytes)} on device storage`;
         dlFull.textContent = "remove device copy »";
         dlFull.disabled = false;
@@ -475,6 +477,17 @@ dlFull.addEventListener("click", () => {
   if (downloading) {
     worker.postMessage({ type: "cancel-download" });
   } else if (deviceCopy) {
+    // Deleting a finished copy discards a large, slow-to-refetch download:
+    // confirm first.
+    if (
+      !confirm(
+        `Remove the device copy of this index (${fmtSize(deviceCopyBytes)})? ` +
+          `You'll go back to searching over the network, and re-downloading ` +
+          `it takes a while.`,
+      )
+    ) {
+      return;
+    }
     // Free the device copy and fall back to network mode. Any running query
     // is cancelled by the reopen; re-run it once the index is back.
     const q = qInput.value.trim();

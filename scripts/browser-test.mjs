@@ -11,6 +11,8 @@ const base = process.argv[2] || "http://localhost:4517/";
 const browser = await chromium.launch({ executablePath: exe });
 const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
+// "remove device copy" asks for confirmation; accept it in the test.
+page.on("dialog", (d) => d.accept());
 
 const waitInfo = (substr, timeout = 120000) =>
   page.waitForFunction(
