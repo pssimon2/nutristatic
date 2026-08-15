@@ -201,8 +201,10 @@ function startSearch(query: string): void {
   resultsEl.textContent = "";
   afterEl.textContent = "";
   resultCount = 0;
+  // Read comp from the live URL (not the load-time snapshot) so back/forward
+  // through raised-budget entries picks up the right value.
   currentComp =
-    parseInt(params.get("comp") || "", 10) ||
+    parseInt(new URLSearchParams(location.search).get("comp") || "", 10) ||
     (indexMode === "range" ? RANGE_COMPUTATION : MAX_COMPUTATION);
   setStatus("searching…");
   worker.postMessage({
@@ -215,6 +217,12 @@ function startSearch(query: string): void {
 
 function tryHarder(): void {
   currentComp *= 2;
+  // Reflect the raised budget in the URL like nutrimatic.org's ?comp=N, so
+  // the "tried harder" state is shareable and reloadable. pushState (not
+  // replace) so Back returns to the lower budget.
+  const p = new URLSearchParams(location.search);
+  p.set("comp", String(currentComp));
+  history.pushState(null, "", `?${p}`);
   afterEl.textContent = "";
   setStatus("searching harder…");
   worker.postMessage({
