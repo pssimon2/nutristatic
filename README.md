@@ -108,8 +108,8 @@ npm run merge-indexes -- 5 wikipedia.*.index wiki-merged.index
 ## Measured performance (2026-08-15 baseline)
 
 Production, cold browser context, first result on screen: **0.3–0.8 s on
-every bundled index** — all 13 Wikipedias (1.3 GB English down to 88 MB
-Turkish), Simple English, and the web-words demo, each probed with a
+every bundled index** — all 22 Wikipedias (1.3 GB English down to 36 MB
+Slovak), Simple English, and the web-words demo, each probed with a
 native-language query (`scripts/prod-matrix.mjs` for the full table).
 
 Constrained networks (CDP emulation, English index, cold), first result on
