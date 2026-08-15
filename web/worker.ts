@@ -621,10 +621,22 @@ async function downloadToOpfs(
     const enc = new TextEncoder();
     const persist = (): void => {
       if (!progSync) return;
-      const json = enc.encode(JSON.stringify({ size, validator, ranges }));
-      progSync.truncate(0);
-      progSync.write(json, { at: 0 });
-      progSync.flush();
+      try {
+        const json = enc.encode(JSON.stringify({ size, validator, ranges }));
+        progSync.truncate(0);
+        progSync.write(json, { at: 0 });
+        progSync.flush();
+      } catch {
+        // The progress record turned out to be unwritable (a platform quirk
+        // around a second open sync handle, say): abandon resume support for
+        // this download rather than letting it sink the whole transfer.
+        try {
+          progSync.close();
+        } catch {
+          // best-effort
+        }
+        progSync = null;
+      }
     };
     persist();
     const markDone = progSync

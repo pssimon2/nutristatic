@@ -53,6 +53,12 @@ const indexPick = $<HTMLSelectElement>("indexpick");
 const customRow = $("customrow");
 const dlFull = $<HTMLButtonElement>("dlfull");
 const dlRemove = $<HTMLButtonElement>("dlremove");
+const dlMsg = $("dlmsg");
+
+function setDlMsg(text: string): void {
+  dlMsg.textContent = text;
+  dlMsg.hidden = text === "";
+}
 
 const params = new URLSearchParams(location.search);
 // Resolve against the page URL: the worker would otherwise resolve relative
@@ -313,6 +319,7 @@ worker.onmessage = (ev) => {
         dlFull.hidden = true;
       } else if (msg.mode === "disk") {
         deviceCopyBytes = msg.bytes;
+        setDlMsg(""); // a copy is present: clear any prior failure notice
         indexInfo.textContent = `${fmtSize(msg.bytes)} on device storage`;
         dlFull.textContent = "remove device copy »";
         dlFull.disabled = false;
@@ -362,6 +369,9 @@ worker.onmessage = (ev) => {
       downloading = false;
       const cancelled = /cancel/i.test(msg.message);
       setStatus(cancelled ? "download cancelled" : `download failed: ${msg.message}`, !cancelled);
+      // Also surface it right by the button — on a phone the status line is
+      // scrolled far above, so otherwise the button just seems to flash back.
+      setDlMsg(cancelled ? "" : `⚠ download failed: ${msg.message}`);
       // A real failure must stay readable: don't let the auto-restarted
       // search overwrite it in the same tick (the user can just resubmit).
       if (!cancelled) pendingQuery = null;
@@ -453,6 +463,7 @@ function startFullDownload(): void {
   downloading = true;
   dlFull.textContent = "cancel download »";
   dlRemove.hidden = true;
+  setDlMsg("");
   const q = qInput.value.trim();
   if (q && !resultsView.hidden) pendingQuery = q;
   setStatus("");
@@ -469,6 +480,7 @@ dlRemove.addEventListener("click", () => {
   dlRemove.hidden = true;
   dlFull.disabled = true;
   setStatus("");
+  setDlMsg("");
   afterEl.textContent = "";
   worker.postMessage({ type: "remove-copy" });
 });

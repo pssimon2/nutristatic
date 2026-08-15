@@ -80,6 +80,7 @@
     #results span { line-height: 1.15; }
     #status { color: #767676; }
     #status.error { color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
+    #dlmsg { display: block; margin-top: 0.4em; color: #c00000; color: light-dark(#c00000, #ff6a6a); font-weight: bold; }
     #indexline { font-size: 0.8em; color: #767676; margin-top: 2em; }
     #indexline input { width: 24em; }
     /* Never force horizontal scrolling on narrow screens. */
@@ -151,7 +152,8 @@
   <p id="indexline">
     index: <select id="indexpick"></select>
     <span id="indexinfo">not loaded</span>
-    <button id="dlfull" hidden></button><button id="dlremove" hidden></button><br>
+    <button id="dlfull" hidden></button><button id="dlremove" hidden></button>
+    <span id="dlmsg" role="alert" hidden></span><br>
     <span id="customrow" hidden>
       <label>index URL: <input type="text" id="indexurl"></label>
       <button id="setindex">load</button>
