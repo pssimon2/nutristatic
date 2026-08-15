@@ -69,34 +69,6 @@ function setDlMsg(text: string): void {
   dlMsg.hidden = text === "";
 }
 
-// A prominent copy of the download control near the top of the home screen.
-// It mirrors the real #dlfull button (label, disabled, hidden) and forwards
-// clicks to it, so the whole download/cancel/resume/remove state machine stays
-// in one place and the home button downloads whatever index is selected.
-const dlHome = $<HTMLButtonElement>("dlhome");
-const dlHomeLine = $("dlhomeline");
-const dlHomeHint = $("dlhomehint");
-dlHome.addEventListener("click", () => dlFull.click());
-function syncDlHome(): void {
-  const label = dlFull.textContent || "";
-  dlHome.textContent = label;
-  dlHome.disabled = dlFull.disabled;
-  dlHomeLine.hidden = dlFull.hidden;
-  dlHomeHint.textContent = /^download whole index/.test(label)
-    ? "— saved on your device for offline use and instant results"
-    : /^remove device copy/.test(label)
-      ? "— this index is on your device"
-      : "";
-}
-new MutationObserver(syncDlHome).observe(dlFull, {
-  attributes: true,
-  attributeFilter: ["hidden", "disabled"],
-  childList: true,
-  characterData: true,
-  subtree: true,
-});
-syncDlHome();
-
 const params = new URLSearchParams(location.search);
 // Resolve against the page URL: the worker would otherwise resolve relative
 // paths against its own script URL.

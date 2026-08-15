@@ -39,13 +39,6 @@ const dl = await page.textContent("#dlfull");
 console.log("download button:", dl);
 if (!/download whole index \(\d+ MB\)/.test(dl)) throw new Error("bad dl label");
 
-// The home-screen download button mirrors the footer button (label + visible).
-const dlHomeText = await page.textContent("#dlhome");
-console.log("home dl button:", await page.isVisible("#dlhome"), "|", dlHomeText);
-if (!(await page.isVisible("#dlhome")) || dlHomeText !== dl) {
-  throw new Error("home download button not mirroring #dlfull");
-}
-
 // Search in range mode (JS engine).
 await page.fill("#q", "<aaagmnr>");
 await page.click("input[type=submit]");
