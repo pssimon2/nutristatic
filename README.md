@@ -73,8 +73,9 @@ It is *generated from the same sources* — `web/main.ts`, `web/worker.ts`, and
 the `src/` engine, with an `OFFLINE` build flag flipping on the file-picker
 path (`scripts/build-offline.mjs` inlines the worker as a Blob and the WASM as
 a data URI). Re-run it after any change; there is no separate offline codebase
-to keep in sync. The served build ships it too — the deploy copies
-`web/dist-offline/nutristatic-offline.html` into `web/dist/` before rsync.
+to keep in sync. `npm run build` runs it automatically (via `postbuild`) and
+drops the file into `web/dist/`, so the served site's "Offline version" link
+resolves with no extra steps.
 
 ## Searching from the command line
 

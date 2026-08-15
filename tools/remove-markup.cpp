@@ -1,3 +1,9 @@
+// remove-markup: strip MediaWiki markup from a Wikipedia dump, emitting the
+// plain article text the indexer consumes. Adapted from Nutrimatic
+// (https://nutrimatic.org/, https://github.com/PuzzleTechHub/nutrimatic) by
+// Dan Egnor and contributors; patched to cap markup-cleanup passes on deeply
+// nested templates. GPL-2.0, same as the rest of the project — see LICENSE.
+
 #include <string>
 
 #include <stdio.h>

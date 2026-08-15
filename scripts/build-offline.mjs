@@ -96,3 +96,11 @@ const outFile = path.join(outDir, "nutristatic-offline.html");
 fs.writeFileSync(outFile, html);
 const kb = (fs.statSync(outFile).size / 1024).toFixed(0);
 console.error(`wrote ${path.relative(ROOT, outFile)} (${kb} KB)`);
+
+// Also drop it into the served build if present, so the site's "Offline
+// version" link resolves after a plain `npm run build` (postbuild runs this).
+const dist = p("web/dist");
+if (fs.existsSync(dist)) {
+  fs.writeFileSync(path.join(dist, "nutristatic-offline.html"), html);
+  console.error("  also placed in web/dist/");
+}

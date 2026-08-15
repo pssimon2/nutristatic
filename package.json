@@ -8,6 +8,7 @@
     "test": "vitest run",
     "dev": "vite web",
     "build": "vite build web",
+    "postbuild": "node scripts/build-offline.mjs",
     "preview": "vite preview web",
     "find-expr": "tsx cli/find-expr.ts",
     "make-index": "tsx cli/make-index.ts",
