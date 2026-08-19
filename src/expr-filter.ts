@@ -14,6 +14,17 @@ const UNCOMPUTED = -2;
 const DEAD = -1;
 const MAX_STATES = 500000;
 
+/**
+ * The lazy DFA outgrew its state budget mid-search. Everything emitted so
+ * far is correct — the walk just cannot continue — so callers should treat
+ * this as a terminal search status, not a failure.
+ */
+export class FilterCapacityError extends Error {
+  constructor(readonly limit: number) {
+    super(`pattern too complex (over ${limit} lazy DFA states)`);
+  }
+}
+
 /** What the search driver needs from a compiled expression. */
 export interface Filter {
   readonly startState: number;
@@ -115,7 +126,7 @@ export class ExprFilter implements Filter {
     if (existing !== undefined) return existing;
 
     const id = this.members.length;
-    if (id >= MAX_STATES) throw new Error(`pattern too complex (over ${MAX_STATES} lazy DFA states)`);
+    if (id >= MAX_STATES) throw new FilterCapacityError(MAX_STATES);
     this.setIds.set(key, id);
     this.members.push(sorted);
     let acc = 0;
@@ -228,7 +239,7 @@ export class ProductFilter implements Filter {
     }
 
     const id = this.count;
-    if (id >= MAX_STATES) throw new Error(`pattern too complex (over ${MAX_STATES} lazy DFA states)`);
+    if (id >= MAX_STATES) throw new FilterCapacityError(MAX_STATES);
     if ((id + 1) * this.width > this.pool.length) {
       const grown = new Int32Array(
         Math.max(256 * this.width, this.pool.length * 2),

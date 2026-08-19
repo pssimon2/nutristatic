@@ -5,6 +5,7 @@
 
 import { IndexReader } from "./index-reader.js";
 import { compileQuery, DEFAULT_RESTART, makeDriver } from "./find-expr.js";
+import { FilterCapacityError } from "./expr-filter.js";
 import { SearchDriver, SearchDriverOptions } from "./search-driver.js";
 
 export interface SearchResult {
@@ -12,10 +13,11 @@ export interface SearchResult {
   text: string;
 }
 
-export type SessionStatus = "limit" | "results" | "exhausted";
+export type SessionStatus = "limit" | "results" | "exhausted" | "complex";
 
 export class SearchSession {
   private driver: SearchDriver;
+  private outOfStates = false;
   steps = 0;
 
   constructor(
@@ -45,25 +47,35 @@ export class SearchSession {
     // fires, so callers treat it like the step budget being hit.
     shouldStop?: () => boolean,
   ): Promise<SessionStatus> {
+    // A lazy filter that ran out of states stays out — the walk cannot be
+    // resumed, but everything already reported is correct and complete up
+    // to that point, so it is a terminal status rather than an error.
+    if (this.outOfStates) return "complex";
     let results = 0;
-    while (this.steps < maxSteps && results < maxResults) {
-      if (++this.steps % 100000 === 0) onProgress?.(this.steps);
-      // Yield to the event loop periodically so stop messages get through.
-      if (this.steps % 20000 === 0 && shouldYield) {
-        const y = shouldYield();
-        if (y instanceof Promise) await y;
+    try {
+      while (this.steps < maxSteps && results < maxResults) {
+        if (++this.steps % 100000 === 0) onProgress?.(this.steps);
+        // Yield to the event loop periodically so stop messages get through.
+        if (this.steps % 20000 === 0 && shouldYield) {
+          const y = shouldYield();
+          if (y instanceof Promise) await y;
+        }
+        if (shouldStop && this.steps % 2000 === 0 && shouldStop()) return "limit";
+        let r = this.driver.step();
+        if (r instanceof Promise) r = await r;
+        if (r) {
+          if (this.driver.text === null) return "exhausted";
+          onResult({
+            score: this.driver.score,
+            text: this.driver.text.replace(/ +$/, ""),
+          });
+          ++results;
+        }
       }
-      if (shouldStop && this.steps % 2000 === 0 && shouldStop()) return "limit";
-      let r = this.driver.step();
-      if (r instanceof Promise) r = await r;
-      if (r) {
-        if (this.driver.text === null) return "exhausted";
-        onResult({
-          score: this.driver.score,
-          text: this.driver.text.replace(/ +$/, ""),
-        });
-        ++results;
-      }
+    } catch (e) {
+      if (!(e instanceof FilterCapacityError)) throw e;
+      this.outOfStates = true;
+      return "complex";
     }
     return this.steps >= maxSteps ? "limit" : "results";
   }

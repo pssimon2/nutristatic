@@ -1457,7 +1457,7 @@ async function runSession(
     if (token !== runToken) return;
     post({
       type: "done",
-      status, // "limit" (step budget), "results" (page full), "exhausted"
+      status, // "limit" (step budget), "results" (page full), "exhausted", "complex"
       steps: searchStepBase + active.steps,
       engine: engineOf(active),
       fetched: rangeSource?.bytesFetched,
