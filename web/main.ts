@@ -12,28 +12,28 @@ const RANGE_STEP_CEILING = 8000000;
 const PER_RUN_RESULTS = 1000;
 
 const BUNDLED_INDEXES: Array<[string, string]> = [
-  ["./en-wiki.index", "English Wikipedia (1.3 GB)"],
-  ["./de-wiki.index", "German Wikipedia – Deutsch (591 MB)"],
-  ["./fr-wiki.index", "French Wikipedia – Français (491 MB)"],
-  ["./es-wiki.index", "Spanish Wikipedia – Español (436 MB)"],
-  ["./it-wiki.index", "Italian Wikipedia – Italiano (360 MB)"],
-  ["./pt-wiki.index", "Portuguese Wikipedia – Português (255 MB)"],
-  ["./nl-wiki.index", "Dutch Wikipedia – Nederlands (222 MB)"],
-  ["./pl-wiki.index", "Polish Wikipedia – Polski (216 MB)"],
-  ["./sv-wiki.index", "Swedish Wikipedia – Svenska (199 MB)"],
-  ["./ca-wiki.index", "Catalan Wikipedia – Català (173 MB)"],
-  ["./id-wiki.index", "Indonesian Wikipedia – Bahasa Indonesia (123 MB)"],
-  ["./cs-wiki.index", "Czech Wikipedia – Čeština (113 MB)"],
-  ["./hu-wiki.index", "Hungarian Wikipedia – Magyar (107 MB)"],
-  ["./no-wiki.index", "Norwegian Wikipedia – Norsk (Bokmål) (102 MB)"],
-  ["./ro-wiki.index", "Romanian Wikipedia – Română (101 MB)"],
-  ["./tr-wiki.index", "Turkish Wikipedia – Türkçe (88 MB)"],
-  ["./fi-wiki.index", "Finnish Wikipedia – Suomi (85 MB)"],
-  ["./da-wiki.index", "Danish Wikipedia – Dansk (51 MB)"],
-  ["./eo-wiki.index", "Esperanto Wikipedia – Esperanto (51 MB)"],
-  ["./sl-wiki.index", "Slovenian Wikipedia – Slovenščina (41 MB)"],
-  ["./hr-wiki.index", "Croatian Wikipedia – Hrvatski (41 MB)"],
-  ["./sk-wiki.index", "Slovak Wikipedia – Slovenčina (36 MB)"],
+  ["./idx/2026-08/en-wiki.index", "English Wikipedia (1.3 GB, 2026-08)"],
+  ["./idx/2026-08/de-wiki.index", "German Wikipedia – Deutsch (591 MB, 2026-08)"],
+  ["./idx/2026-08/fr-wiki.index", "French Wikipedia – Français (491 MB, 2026-08)"],
+  ["./idx/2026-08/es-wiki.index", "Spanish Wikipedia – Español (436 MB, 2026-08)"],
+  ["./idx/2026-08/it-wiki.index", "Italian Wikipedia – Italiano (360 MB, 2026-08)"],
+  ["./idx/2026-08/pt-wiki.index", "Portuguese Wikipedia – Português (255 MB, 2026-08)"],
+  ["./idx/2026-08/nl-wiki.index", "Dutch Wikipedia – Nederlands (222 MB, 2026-08)"],
+  ["./idx/2026-08/pl-wiki.index", "Polish Wikipedia – Polski (216 MB, 2026-08)"],
+  ["./idx/2026-08/sv-wiki.index", "Swedish Wikipedia – Svenska (199 MB, 2026-08)"],
+  ["./idx/2026-08/ca-wiki.index", "Catalan Wikipedia – Català (173 MB, 2026-08)"],
+  ["./idx/2026-08/id-wiki.index", "Indonesian Wikipedia – Bahasa Indonesia (123 MB, 2026-08)"],
+  ["./idx/2026-08/cs-wiki.index", "Czech Wikipedia – Čeština (113 MB, 2026-08)"],
+  ["./idx/2026-08/hu-wiki.index", "Hungarian Wikipedia – Magyar (107 MB, 2026-08)"],
+  ["./idx/2026-08/no-wiki.index", "Norwegian Wikipedia – Norsk (Bokmål) (102 MB, 2026-08)"],
+  ["./idx/2026-08/ro-wiki.index", "Romanian Wikipedia – Română (101 MB, 2026-08)"],
+  ["./idx/2026-08/tr-wiki.index", "Turkish Wikipedia – Türkçe (88 MB, 2026-08)"],
+  ["./idx/2026-08/fi-wiki.index", "Finnish Wikipedia – Suomi (85 MB, 2026-08)"],
+  ["./idx/2026-08/da-wiki.index", "Danish Wikipedia – Dansk (51 MB, 2026-08)"],
+  ["./idx/2026-08/eo-wiki.index", "Esperanto Wikipedia – Esperanto (51 MB, 2026-08)"],
+  ["./idx/2026-08/sl-wiki.index", "Slovenian Wikipedia – Slovenščina (41 MB, 2026-08)"],
+  ["./idx/2026-08/hr-wiki.index", "Croatian Wikipedia – Hrvatski (41 MB, 2026-08)"],
+  ["./idx/2026-08/sk-wiki.index", "Slovak Wikipedia – Slovenčina (36 MB, 2026-08)"],
   ["./simple-wiki.index", "Simple English Wikipedia (41 MB)"],
   ["./demo.index", "web words + bigrams (20 MB)"],
 ];
@@ -697,4 +697,35 @@ window.addEventListener("beforeinstallprompt", (e) => {
 installLink?.addEventListener("click", (e) => {
   e.preventDefault();
   void installPrompt?.prompt();
+});
+
+// "Copy link to these results": the current URL with the index made
+// explicit. Shared URLs normally omit the default index, which is whatever
+// the picker currently offers — so a link shared today could answer with a
+// newer index edition later. Pinning ?index= to the (versioned) URL in use
+// keeps the link meaning exactly these results.
+const shareBtn = document.getElementById("sharelink");
+const shareMsg = document.getElementById("sharemsg");
+// Meaningless from the file:// single-file build: no shareable origin.
+if (OFFLINE) {
+  const line = document.getElementById("shareline");
+  if (line) line.hidden = true;
+}
+shareBtn?.addEventListener("click", () => {
+  const p = new URLSearchParams(location.search);
+  const u = new URL(indexUrl);
+  p.set("index", u.origin === location.origin ? u.pathname : indexUrl);
+  const link = `${location.origin}${location.pathname}?${p}`;
+  navigator.clipboard.writeText(link).then(
+    () => {
+      if (shareMsg) shareMsg.textContent = "copied — pinned to this index";
+      setTimeout(() => {
+        if (shareMsg) shareMsg.textContent = "";
+      }, 4000);
+    },
+    () => {
+      // Clipboard denied (permissions, http): show the link for manual copy.
+      if (shareMsg) shareMsg.textContent = link;
+    },
+  );
 });
