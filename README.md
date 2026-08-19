@@ -1,6 +1,6 @@
 # Nutristatic — Nutrimatic, serverless
 
-A rewrite of [Nutrimatic](https://nutrimatic.org/) ([upstream
+A rewrite of [Nutrimatic](https://nutrimatic.org/) ([Nutrimatic
 source](https://github.com/PuzzleTechHub/nutrimatic)) that runs with **no
 server-side code**, deployed at [nutristatic.org](https://nutristatic.org/).
 The user-facing "what is this and how does it differ from Nutrimatic"
@@ -9,19 +9,19 @@ documentation lives in the site's
 implementation. The pattern engine is TypeScript running in a Web Worker
 in the visitor's browser; the phrase-frequency index is a plain static file.
 (A WebAssembly port of the engine — `wasm-kernel/kernel.c` driven by
-`src/wasm-session.ts` — takes over automatically for fully-local indexes,
-worth ~1.6x on heavy anagrams; the JS engine remains the reference
-implementation, the fallback, and the range-mode engine.)
+`src/wasm-session.ts` — takes over automatically for fully-local indexes;
+the JS engine remains the reference implementation, the fallback, and the
+range-mode engine.)
 Deploy the built site to any static host (GitHub Pages, S3, nginx `root`,
 `python -m http.server`, …) and it works.
 
-The index file format is **byte-compatible with upstream**: indexes built by
+The index file format is **byte-compatible with Nutrimatic**: indexes built by
 the original C++ tools work here, and indexes built by these TypeScript tools
 work with the C++ binaries (verified byte-for-byte in CI tests).
 
 ## How it works
 
-- `src/` — the engine, a faithful port of upstream's C++:
+- `src/` — the engine, a faithful port of Nutrimatic's C++:
   - `index-reader.ts` / `index-writer.ts` / `index-walker.ts` — the trie
     index format (nodes written children-first; the root is the end of the
     file).
@@ -41,9 +41,9 @@ work with the C++ binaries (verified byte-for-byte in CI tests).
     requests** with an LRU chunk cache, so a multi-gigabyte index can be
     searched from static hosting without downloading it.
 - `web/` — the Vite site: `worker.ts` owns the index + search session,
-  `main.ts` renders the upstream-style UI (`?q=` URLs, font size ∝ log
+  `main.ts` renders the Nutrimatic-style UI (`?q=` URLs, font size ∝ log
   score, computation limit with "Try harder »").
-- `cli/` — Node ports of the upstream binaries: `find-expr`, `make-index`,
+- `cli/` — Node ports of the Nutrimatic binaries: `find-expr`, `make-index`,
   `merge-indexes`, `dump-index`, plus `wordlist-index` (build an index from
   frequency wordlists, used for the bundled demo index) and `compress-index`
   (build the `.idxz` sidecar the web deploy serves next to each index).
@@ -52,7 +52,7 @@ work with the C++ binaries (verified byte-for-byte in CI tests).
 
 ```sh
 npm install
-npm test               # vitest: format round-trip, upstream test-expr golden
+npm test               # vitest: format round-trip, Nutrimatic test-expr golden
                        # cases, HTTP-range integration
 npm run dev            # vite dev server
 npm run build          # static site -> web/dist/
@@ -95,56 +95,15 @@ curl -O https://norvig.com/ngrams/count_2w.txt
 npm run wordlist-index -- web/public/demo.index count_1w.txt count_2w.txt
 ```
 
-A full Wikipedia index works exactly as upstream describes (extract text,
+A full Wikipedia index works exactly as Nutrimatic describes (extract text,
 `make-index`, `merge-indexes` with frequency cutoffs) — either with the
-upstream C++ tools or these CLI ports (the C++ tools are much faster for a
+Nutrimatic C++ tools or these CLI ports (the C++ tools are much faster for a
 full-size corpus; the outputs are interchangeable):
 
 ```sh
 find text -type f | xargs cat | npm run make-index -- wikipedia
 npm run merge-indexes -- 5 wikipedia.*.index wiki-merged.index
 ```
-
-## Measured performance (2026-08-15 baseline)
-
-Production, cold browser context, first result on screen: **0.3–0.8 s on
-every bundled index** — all 22 Wikipedias (1.3 GB English down to 36 MB
-Slovak), Simple English, and the web-words demo, each probed with a
-native-language query (`scripts/prod-matrix.mjs` for the full table).
-
-Constrained networks (CDP emulation, English index, cold), first result on
-screen:
-
-| Profile | First result |
-|---|---|
-| 2 Mbps / 150 ms RTT | 13.2 s |
-| 8 Mbps / 300 ms RTT | 4.9 s |
-
-A search that would stream a large slice of the index over the network stops
-at a bytes/time budget (~32 MB or ~20 s) and offers to download the index for
-instant local searching.
-
-Heavy anagram (`<aciimnrttu>`, English index): ~5 s cold range mode,
-~2 s from a device-stored (OPFS) copy including page load, 0.1 s warm
-revisit. Engine: 1.3–3.5M steps/s in-memory (JS; the WASM kernel adds
-~1.6x on heavy anagrams for fully-local indexes); a 500k-step,
-100k-result search costs ~7 MB of heap. Whole-index download: 1.3 GB
-transferred as 785 MB compressed in ~30 s on fast links, cancellable.
-Compressed range transport (`.idxz` sidecars) cuts per-query transfer
-31–39%.
-
-Regenerate: `node scripts/bench-all.mjs` (engine + fixtures),
-`node scripts/prod-matrix.mjs` (live site, all indexes), and
-`node scripts/throttle-matrix.mjs` (bandwidth emulation).
-
-## Server caching headers
-
-The Caddy site block sets `Cache-Control` explicitly: Vite's content-hashed
-`/assets/*` are `public, max-age=31536000, immutable` (no revalidation
-round trips, ever — a new deploy changes the hash), the HTML shell is
-`no-cache` (revalidates so deploys appear immediately), and small statics get
-a day. Index/sidecar files intentionally get none: range responses are
-managed by the app's own Cache Storage layer.
 
 ## Deploying with a big index
 
@@ -160,7 +119,13 @@ Requirements for the index host:
 Point the app at it with `?index=https://example.com/wiki-merged.index` or
 the "index URL" box at the bottom of the page.
 
+Hosting the site itself needs nothing beyond a static file server. Useful
+cache settings, whatever the server: long lifetimes for Vite's content-hashed
+`/assets/*`, `no-cache` for the HTML shell and `sw.js` (so deploys appear
+immediately), and no special caching for index/sidecar files — range
+responses are managed by the app's own Cache Storage layer.
+
 ## License
 
-GPL-2.0, same as upstream Nutrimatic, which this is derived from.
+GPL-2.0, same as Nutrimatic, which this is derived from.
 Original Nutrimatic is by Dan Egnor and contributors.

@@ -1,4 +1,4 @@
-// Port of upstream find-expr.cpp + search-printer.cpp: stream results for an
+// Port of Nutrimatic find-expr.cpp + search-printer.cpp: stream results for an
 // expression against an index, with '# N' progress lines every 100k steps.
 
 import { compileQuery, formatScore, makeDriver, ParseError } from "../src/find-expr.js";
@@ -14,7 +14,7 @@ const USAGE =
   "  N: step limit (default 1000000; 0 = unlimited)";
 
 const args = process.argv.slice(2);
-// Same default computation limit as the upstream website; upstream's CLI
+// Same default computation limit as the Nutrimatic website; Nutrimatic's CLI
 // instead runs unbounded, which exhausts memory on open-ended patterns.
 let maxSteps = 1000000;
 const flagIdx = args.indexOf("--max-steps");
