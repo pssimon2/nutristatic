@@ -357,6 +357,30 @@ function opfsName(url: string): string {
   return "idx-" + encodeURIComponent(url);
 }
 
+/**
+ * The other URL the same index file is served under, or null.
+ *
+ * The 2026-08 wiki indexes are served both at the site root (their original
+ * home, kept alive for old links) and at their permanent versioned home
+ * `/idx/2026-08/…` — the same bytes, hardlinked. Device copies are keyed by
+ * URL, so without this a copy downloaded under one spelling would not be
+ * found when the page arrives via the other (say, a shared link pinned with
+ * `?index=`). The mapping is fixed: only the 2026-08 edition ever lived at
+ * the root, so later editions have no alias.
+ */
+function indexUrlAlias(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const root = /^\/([a-z]{2}-wiki)\.index$/.exec(u.pathname);
+    if (root) return `${u.origin}/idx/2026-08/${root[1]}.index`;
+    const versioned = /^\/idx\/2026-08\/([a-z]{2}-wiki)\.index$/.exec(u.pathname);
+    if (versioned) return `${u.origin}/${versioned[1]}.index`;
+  } catch {
+    // not an absolute URL (offline file picker): no alias
+  }
+  return null;
+}
+
 // Completion sentinel: pieces are written concurrently at absolute offsets,
 // so an interrupted download can leave a full-size file with zeroed holes
 // that a size check alone would accept. The marker (containing the size) is
@@ -536,10 +560,27 @@ async function opfsHandle(
   }
 }
 
-/** Open a previously downloaded index from OPFS, or null. */
+/**
+ * Open a previously downloaded index from OPFS, or null — checking the
+ * URL's alias spelling too, so a copy downloaded under either home of the
+ * same file (root or /idx/…) serves both.
+ */
 async function openOpfsIndex(
   url: string,
   expectedSize: number,
+): Promise<SyncFileSource | null> {
+  const own = await openOpfsIndexAt(url, expectedSize, true);
+  if (own) return own;
+  const alias = indexUrlAlias(url);
+  // Non-destructive on the alias: a mismatch there may just mean the copy
+  // belongs to the alias URL's own (older) content, not that it is garbage.
+  return alias ? openOpfsIndexAt(alias, expectedSize, false) : null;
+}
+
+async function openOpfsIndexAt(
+  url: string,
+  expectedSize: number,
+  destroyStale: boolean,
 ): Promise<SyncFileSource | null> {
   const handle = await opfsHandle(url, false);
   if (!handle) return null;
@@ -565,7 +606,7 @@ async function openOpfsIndex(
         prog.size === expectedSize &&
         !validatorStale(prog.validator) &&
         coveredBytes(prog.ranges) > 0;
-      if (!resumable) await opfsRemove(url);
+      if (!resumable && destroyStale) await opfsRemove(url);
       return null;
     }
     // The previous page's worker may not have released its lock yet right
@@ -981,7 +1022,10 @@ let openGen = 0;
 async function openOpfsOffline(
   url: string,
 ): Promise<{ source: SyncFileSource; size: number; validator: string | null } | null> {
-  const marker = parseOpfsMarker(await opfsReadMarker(url));
+  const alias = indexUrlAlias(url);
+  const marker =
+    parseOpfsMarker(await opfsReadMarker(url)) ??
+    (alias ? parseOpfsMarker(await opfsReadMarker(alias)) : null);
   if (!marker || typeof marker.size !== "number") return null;
   // Adopt the marker's validator so openOpfsIndex's staleness check (which
   // would otherwise compare against the unreachable server) is a no-op.
@@ -1017,7 +1061,13 @@ async function listOpfsCopies(): Promise<string[]> {
         if (!mk || typeof mk.size !== "number") continue;
         const fh = await root.getFileHandle(base).catch(() => null);
         if (!fh) continue;
-        if ((await fh.getFile()).size === mk.size) urls.push(url);
+        if ((await fh.getFile()).size === mk.size) {
+          urls.push(url);
+          // Report the copy under its alias spelling too, so the picker's
+          // "on device" tag matches whichever spelling its entries use.
+          const alias = indexUrlAlias(url);
+          if (alias) urls.push(alias);
+        }
       } catch {
         // skip an unreadable entry
       }
@@ -1593,6 +1643,10 @@ self.onmessage = async (ev: MessageEvent<InMsg>) => {
         diskSource?.close();
         diskSource = null;
         await opfsRemove(url);
+        // The copy may live under the URL's alias spelling: remove that too,
+        // or "remove" would appear to do nothing.
+        const aliasUrl = indexUrlAlias(url);
+        if (aliasUrl) await opfsRemove(aliasUrl);
         await openCache().then((c) => c?.delete(url)).catch(() => {});
         await openIndex(url);
         break;
