@@ -717,7 +717,13 @@ if (OFFLINE) {
 shareBtn?.addEventListener("click", () => {
   const p = new URLSearchParams(location.search);
   const u = new URL(indexUrl);
-  p.set("index", u.origin === location.origin ? u.pathname : indexUrl);
+  // Same-origin: the path, plus any query or fragment the URL carries —
+  // `/demo.index?v=2` is a different file from `/demo.index` to every cache
+  // and possibly to the server, so pinning must not drop the tail.
+  p.set(
+    "index",
+    u.origin === location.origin ? u.pathname + u.search + u.hash : indexUrl,
+  );
   const link = `${location.origin}${location.pathname}?${p}`;
   navigator.clipboard.writeText(link).then(
     () => {

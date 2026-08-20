@@ -41,7 +41,19 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== location.origin) return; // custom remote index URLs
   if (url.pathname.startsWith("/stats")) return; // private dashboard
   if (req.headers.has("range")) return; // range reads for the index stream
-  if (url.pathname.endsWith(".index") || url.pathname.endsWith(".idxz")) return;
+  // Index data and everything that must match the index byte for byte: a
+  // `.head` answers *as* the first page of results and a `.meta.json`
+  // describes the index's own conventions, so a copy cached past a rebuild
+  // would answer from a corpus the index no longer contains. The app manages
+  // index bytes in its own caches; these simply pass through to the network.
+  if (
+    url.pathname.endsWith(".index") ||
+    url.pathname.endsWith(".idxz") ||
+    url.pathname.endsWith(".head") ||
+    url.pathname.endsWith(".meta.json")
+  ) {
+    return;
+  }
 
   // Page navigations: network-first (so redeploys show up immediately), then
   // fall back to the cached page — or the app shell — when offline.

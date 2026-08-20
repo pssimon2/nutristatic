@@ -652,12 +652,25 @@ async function downloadToOpfs(
   signal?: AbortSignal,
 ): Promise<SyncFileSource | null> {
   const handle = await opfsHandle(url, true);
-  if (!handle) return null;
+  if (!handle) return null; // no OPFS here: the caller's memory path applies
   let sync: any;
-  try {
-    sync = await (handle as any).createSyncAccessHandle();
-  } catch {
-    return null;
+  // A handle that will not open is usually another tab holding this index,
+  // not a browser without OPFS — and the difference matters: falling through
+  // to the memory/cache path would download the whole index a second time and
+  // store it twice over. Retry briefly (a reloading tab releases within a few
+  // hundred ms), then say what is actually wrong.
+  for (let attempt = 0; ; ++attempt) {
+    try {
+      sync = await (handle as any).createSyncAccessHandle();
+      break;
+    } catch (e) {
+      if (attempt >= 5) {
+        throw new Error(
+          "this index is open in another tab — close or switch it, then retry",
+        );
+      }
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
   }
   const validator = currentValidator ?? null;
   let progSync: any = null;
@@ -1333,21 +1346,30 @@ let downloadCtrl: AbortController | null = null;
 
 /** Drop persisted range chunks + sidecar table for `url` (superseded by a
  * full local copy). Keys cover both the plain and `.idxz` chunk stores. */
+/**
+ * Does a chunk-cache key belong to `url`? Keys are `${url}?nutrimatic-…`
+ * (plain store, validator, sidecar table) and `${url}.idxz?nutrimatic-…`
+ * (compressed store) — matched by exact prefix, never a bare
+ * `startsWith(url)`, so an index whose URL merely extends another's is never
+ * swept up with it. The alias spelling counts too (see indexUrlAlias): the
+ * same file served under both URLs has one set of pieces, and a purge that
+ * missed half of them would leave bytes no UI could reclaim.
+ */
+function chunkKeyBelongsTo(key: string, url: string): boolean {
+  if (key.startsWith(url + "?") || key.startsWith(url + ".idxz?")) return true;
+  const alias = indexUrlAlias(url);
+  return (
+    alias !== null &&
+    (key.startsWith(alias + "?") || key.startsWith(alias + ".idxz?"))
+  );
+}
+
 async function purgeChunks(url: string): Promise<void> {
   try {
     const cache = await openCache(CHUNK_CACHE_NAME);
     if (!cache) return;
-    // Keys are `${url}?nutrimatic-...` (plain store, validator, table) and
-    // `${url}.idxz?nutrimatic-chunk=...` (compressed store). Matching those
-    // two exact prefixes — rather than a bare `startsWith(url)` — avoids
-    // also purging a different index whose URL merely starts with this one.
     for (const req of await cache.keys()) {
-      if (
-        req.url.startsWith(url + "?") ||
-        req.url.startsWith(url + ".idxz?")
-      ) {
-        await cache.delete(req);
-      }
+      if (chunkKeyBelongsTo(req.url, url)) await cache.delete(req);
     }
   } catch {
     // best-effort
