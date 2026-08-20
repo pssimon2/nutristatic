@@ -6,7 +6,9 @@ tuple/subset interning via open-addressed hashes) — compiled to WebAssembly
 from freestanding C. The web worker runs it for fully-local indexes (memory
 mode, or an OPFS disk copy ≤ 800 MB, where the index is copied into linear
 memory); range mode and any WASM failure use the JS engine, which is the
-reference implementation and the fallback.
+reference implementation and the fallback. The kernel's link-time memory
+cap is 3 GB; the worker's 800 MB disk-copy gate is its own, deliberately
+conservative bound.
 
 - `kernel.c` — the engine in freestanding C, compiled with plain clang
   (`--target=wasm32-unknown-unknown`, no Emscripten). Index bytes and the
@@ -19,8 +21,10 @@ and `test/wasm-session.test.ts` locks parity (identical score streams), the
 per-query heap reset, resumability, and the engine-ownership guard that stops
 a superseded run from stepping a re-seeded kernel.
 
-The JS typed-array hot loop is near-native for this workload, so the JS
-engine stays the reference and the fallback.
+The kernel runs the same walk noticeably faster than the JS engine on
+fully-local indexes (heavy anagrams especially); the JS engine stays the
+*correctness* reference and the fallback — both emit identical score
+streams, locked by the parity tests.
 
 Build with `npm run build-wasm` (the web build bundles `kernel.wasm` as an
 asset).

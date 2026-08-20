@@ -11,6 +11,8 @@ const RANGE_TIME_MS = 20000; //               …or ~20 s, whichever comes first
 const RANGE_STEP_CEILING = 8000000;
 const PER_RUN_RESULTS = 1000;
 
+// The first entry is the default index; web/index.html's inline early-fetch
+// script (which cannot import) mirrors its URL by hand — change both.
 const BUNDLED_INDEXES: Array<[string, string]> = [
   ["./idx/2026-08/en-wiki.index", "English Wikipedia (1.3 GB, 2026-08)"],
   ["./idx/2026-08/de-wiki.index", "German Wikipedia – Deutsch (591 MB, 2026-08)"],
@@ -357,7 +359,8 @@ worker.onmessage = (ev) => {
       deviceCopy = msg.mode === "disk";
       indexMode = msg.mode === "range" ? "range" : "memory";
       // Flag device copies so the next page load skips the early sidecar
-      // table fetch (see the inline <head> script).
+      // table fetch. The "nutristatic-disk:" key is mirrored by hand in
+      // web/index.html's inline <head> script — change both.
       try {
         if (msg.mode === "disk") {
           localStorage.setItem(`nutristatic-disk:${indexUrl}`, "1");

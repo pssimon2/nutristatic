@@ -66,10 +66,6 @@ export class ExprFilter implements Filter {
     this.startState = this.intern(this.closeSet([parsedExpr.start]));
   }
 
-  get numStates(): number {
-    return this.accepting.length;
-  }
-
   isAccepting(state: number): boolean {
     return this.accepting[state] !== 0;
   }
@@ -185,10 +181,6 @@ export class ProductFilter implements Filter {
       h ^= h >>> 13;
     }
     return h >>> 0;
-  }
-
-  get numStates(): number {
-    return this.accepting.length;
   }
 
   isAccepting(state: number): boolean {

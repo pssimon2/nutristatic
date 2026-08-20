@@ -139,6 +139,13 @@ export const EMPTY_DFA: Dfa = {
 
 const MAX_DFA_STATES = 500000;
 
+/** Eager determinization/product ran past the state ceiling. */
+export class TooManyStates extends Error {
+  constructor(readonly limit: number) {
+    super("pattern too complex");
+  }
+}
+
 /** Subset construction with epsilon closures folded in. */
 export function determinize(nfa: Nfa): Dfa {
   if (nfa.start === -1) return EMPTY_DFA;
@@ -180,7 +187,7 @@ export function determinize(nfa: Nfa): Dfa {
     let id = subsetIds.get(key);
     if (id !== undefined) return id;
     id = subsets.length;
-    if (id >= MAX_DFA_STATES) throw new Error("pattern too complex");
+    if (id >= MAX_DFA_STATES) throw new TooManyStates(MAX_DFA_STATES);
     subsetIds.set(key, id);
     subsets.push(states);
     accepting.push(states.some((s) => nfa.finals.has(s)) ? 1 : 0);
@@ -412,7 +419,7 @@ export function product(a: Dfa, b: Dfa): Dfa {
     let id = ids.get(key);
     if (id !== undefined) return id;
     id = pairs.length / 2;
-    if (id >= MAX_DFA_STATES) throw new Error("pattern too complex");
+    if (id >= MAX_DFA_STATES) throw new TooManyStates(MAX_DFA_STATES);
     ids.set(key, id);
     pairs.push(sa, sb);
     accepting.push(a.accepting[sa] && b.accepting[sb] ? 1 : 0);

@@ -80,6 +80,7 @@ async function fetchPieces(
 const CACHE_NAME = "nutrimatic-index-v1";
 // Chunk keys include the chunk size, so entries cached under a different
 // chunking are never reinterpreted.
+// Mirrored by hand in web/index.html's inline early-fetch script — change both.
 const CHUNK_CACHE_NAME = "nutrimatic-chunks-v2";
 const RANGE_CHUNK_SIZE = 1 << 15;
 // Range mode: prewarm this much of the file tail (trie root region), and
@@ -389,6 +390,20 @@ function opfsOkName(url: string): string {
   return opfsName(url) + ".ok";
 }
 
+/**
+ * Is a stored record usable against the live probe? A record with no
+ * validator, or an index we have no validator for, is accepted: the size
+ * check is all we have.
+ */
+function validatorOk(v: string | null | undefined): boolean {
+  return v == null || currentValidator == null || v === currentValidator;
+}
+
+/** Exact negation of `validatorOk`, for call sites that read better inverted. */
+function validatorStale(v: string | null | undefined): boolean {
+  return !validatorOk(v);
+}
+
 interface OpfsMarker {
   size: number;
   validator: string | null;
@@ -511,8 +526,6 @@ async function checkPartial(
   expectedSize: number,
 ): Promise<{ loaded: number; total: number } | null> {
   const marker = parseOpfsMarker(await opfsReadMarker(url));
-  const validatorOk = (v: string | null | undefined) =>
-    v == null || currentValidator == null || v === currentValidator;
   if (marker != null && marker.size === expectedSize && validatorOk(marker.validator)) {
     return null; // a finished copy exists
   }
@@ -587,8 +600,6 @@ async function openOpfsIndexAt(
   try {
     const file = await handle.getFile();
     const marker = parseOpfsMarker(await opfsReadMarker(url));
-    const validatorStale = (v: string | null | undefined) =>
-      v != null && currentValidator != null && v !== currentValidator;
     const complete =
       marker != null &&
       marker.size === expectedSize &&
@@ -1229,6 +1240,8 @@ async function openIndex(url: string, early?: OpenMsg["early"]): Promise<void> {
         tableStore: {
           get: async () => {
             const cache = await openCache(CHUNK_CACHE_NAME);
+            // The "?nutrimatic-idxz-table" key is mirrored by hand in
+            // web/index.html's inline early-fetch script — change both.
             const hit = cache && (await cache.match(`${url}?nutrimatic-idxz-table`));
             return hit ? new Uint8Array(await hit.arrayBuffer()) : undefined;
           },
@@ -1339,6 +1352,9 @@ async function downloadFull(): Promise<void> {
     throw new Error("index too large to download whole");
   }
   // Fail fast on insufficient storage instead of minutes into the transfer.
+  // Quietly proceeds when estimate() is unavailable — the write itself will
+  // fail if it must.
+  let quotaShort: number | null = null;
   try {
     const est = await navigator.storage.estimate();
     if (
@@ -1346,15 +1362,16 @@ async function downloadFull(): Promise<void> {
       est.usage != null &&
       currentSize > est.quota - est.usage
     ) {
-      const free = Math.max(0, est.quota - est.usage);
-      throw new Error(
-        `not enough storage (need ${Math.round(currentSize / 1048576)} MB, ` +
-          `~${Math.round(free / 1048576)} MB free)`,
-      );
+      quotaShort = Math.max(0, est.quota - est.usage);
     }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith("not enough")) throw e;
-    // estimate() unavailable: proceed and let the write fail if it must.
+  } catch {
+    // estimate() unavailable
+  }
+  if (quotaShort !== null) {
+    throw new Error(
+      `not enough storage (need ${Math.round(currentSize / 1048576)} MB, ` +
+        `~${Math.round(quotaShort / 1048576)} MB free)`,
+    );
   }
   // Ask the browser not to evict gigabytes of index behind the user's back.
   void navigator.storage.persist?.().catch(() => {});
