@@ -120,4 +120,32 @@ describe("test-expr golden cases (from Nutrimatic test-expr.cpp)", () => {
       "the largest natural body of water in iceland ",
     );
   }, 120000);
+
+  it("character class with leading hyphen", async () => {
+    await testIndex('"[-abc]" ', "a ", "d ");
+  });
+
+  it("character class with trailing hyphen", async () => {
+    await testIndex('"[abc-]" ', "b ", "d ");
+  });
+
+  it("negated character class", async () => {
+    await testIndex('"[^a]" ', "b ", "a ");
+  });
+
+  it("negated full alphabet produces no results", async () => {
+    await testIndex('"([^a-z0-9 ])" ', null, "a ");
+  });
+
+  it("rejects inverted range in character class", async () => {
+    const { compileQuery, ParseError } = await import("../src/find-expr.js");
+    expect(() => compileQuery("[z-a]")).toThrow(ParseError);
+  });
+
+  it("rejects unclosed range in character class", async () => {
+    const { compileQuery, ParseError } = await import("../src/find-expr.js");
+    expect(() => compileQuery("[a-")).toThrow(ParseError);
+  });
 });
+
+

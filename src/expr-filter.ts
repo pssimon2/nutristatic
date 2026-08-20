@@ -72,11 +72,12 @@ export class ExprFilter implements Filter {
 
   /** Next state on `ch` (a character code), or -1 if no transition. */
   transition(state: number, ch: number): number {
-    const sym = ch < 128 ? CHAR_TO_SYM[ch] : -1;
+    const sym = ch >= 0 && ch < 128 ? CHAR_TO_SYM[ch] : -1;
     if (sym === -1) return DEAD;
     const t = this.trans[state * NSYM + sym];
     return t === UNCOMPUTED ? this.compute(state, sym) : t;
   }
+
 
   private compute(state: number, sym: number): number {
     const label = ALPHABET[sym];
@@ -188,11 +189,12 @@ export class ProductFilter implements Filter {
   }
 
   transition(state: number, ch: number): number {
-    const sym = ch < 128 ? CHAR_TO_SYM[ch] : -1;
+    const sym = ch >= 0 && ch < 128 ? CHAR_TO_SYM[ch] : -1;
     if (sym === -1) return DEAD;
     const t = this.trans[state * NSYM + sym];
     return t === UNCOMPUTED ? this.compute(state, sym, ch) : t;
   }
+
 
   private readonly scratch: number[] = [];
 

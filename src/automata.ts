@@ -201,11 +201,12 @@ export function determinize(nfa: Nfa): Dfa {
     for (const s of subsets[id]) {
       for (const a of nfa.arcs[s]) {
         if (a.label === EPSILON) continue;
-        const sym = CHAR_TO_SYM[a.label];
+        const sym = a.label >= 0 && a.label < 128 ? CHAR_TO_SYM[a.label] : -1;
         if (sym === -1) throw new Error(`bad label ${a.label}`);
         (bySym[sym] ??= []).push(a.to);
       }
     }
+
     for (let sym = 0; sym < NSYM; ++sym) {
       const targets = bySym[sym];
       if (!targets) continue;
@@ -553,10 +554,17 @@ export function equivalent(a: Nfa, b: Nfa): boolean {
 
 /** Nutrimatic IntersectExprs: pairwise tree of optimized products. */
 export function intersectExprs(exprs: Nfa[], out: Nfa): void {
+  if (exprs.length === 0) {
+    out.arcs = [];
+    out.start = -1;
+    out.finals.clear();
+    return;
+  }
   if (exprs.length === 1) {
     out.copyFrom(exprs[0]);
     return;
   }
+
   let input = exprs.slice();
   while (input.length > 1) {
     const output: Nfa[] = [];

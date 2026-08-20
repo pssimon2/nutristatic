@@ -155,4 +155,21 @@ describe("minimize (Hopcroft)", () => {
     expect(equivalent(x, y1)).toBe(true);
     expect(ALPHABET.length).toBe(NSYM);
   });
+
+  it("handles intersectExprs on empty list without throwing", async () => {
+    const { intersectExprs } = await import("../src/automata.js");
+    const out = new Nfa();
+    intersectExprs([], out);
+    expect(out.start).toBe(-1);
+  });
+
+  it("throws on out-of-alphabet arc labels in determinize", () => {
+    const nfa = new Nfa();
+    const s = nfa.addState();
+    nfa.setStart(s);
+    nfa.setFinal(s);
+    nfa.addArc(s, 255, s); // 255 is not in ALPHABET
+    expect(() => determinize(nfa)).toThrow(/bad label/);
+  });
 });
+

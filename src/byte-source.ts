@@ -291,16 +291,33 @@ export class HttpRangeSource implements ByteSource {
       else mine.push(c);
     }
     if (mine.length > 0) {
-      const p = this.loadOwnChunks(mine).finally(() => {
-        for (const c of mine) this.inflight.delete(c);
+      const allMine: number[] = [...mine];
+      let resolveFetch!: () => void;
+      let rejectFetch!: (err: any) => void;
+      const p = new Promise<void>((res, rej) => {
+        resolveFetch = res;
+        rejectFetch = rej;
+      }).finally(() => {
+        for (const c of allMine) this.inflight.delete(c);
       });
+
       for (const c of mine) this.inflight.set(c, p);
+      this.loadOwnChunks(mine, (extra) => {
+        for (const c of extra) {
+          allMine.push(c);
+          this.inflight.set(c, p);
+        }
+      }).then(resolveFetch, rejectFetch);
       waits.push(p);
     }
     return Promise.all(waits).then(() => {});
+
   }
 
-  private async loadOwnChunks(missing: number[]): Promise<void> {
+  private async loadOwnChunks(
+    missing: number[],
+    onExtra?: (extra: number[]) => void,
+  ): Promise<void> {
     // Consult the persistent store first; only truly-missing chunks go to the
     // network.
     let still = missing;
@@ -315,11 +332,18 @@ export class HttpRangeSource implements ByteSource {
     if (still.length > 0) {
       // Read-ahead: extend the fetch backwards over uncached chunks, up to
       // the current bandwidth-delay product.
-      const maxExtra = Math.min(
-        32,
-        Math.floor((this.ewmaBw * this.ewmaRtt) / this.chunkSize),
+      const maxExtra = Math.max(
+        0,
+        Math.min(
+          16,
+          Math.floor(this.maxChunks / 8),
+          Math.floor((this.ewmaBw * this.ewmaRtt) / this.chunkSize),
+        ),
       );
+
+
       let first = still[0];
+      const extra: number[] = [];
       while (
         first > 0 &&
         still[0] - first < maxExtra &&
@@ -327,7 +351,9 @@ export class HttpRangeSource implements ByteSource {
         !this.inflight.has(first - 1)
       ) {
         --first;
+        extra.push(first);
       }
+      if (onExtra && extra.length > 0) onExtra(extra);
       await this.fetchChunks(first, still[still.length - 1]);
     }
   }
@@ -348,8 +374,7 @@ export class HttpRangeSource implements ByteSource {
     const dt = Math.max(0.001, (Date.now() - t0) / 1000);
     const rttSample = Math.max(0.005, dt - buf.length / this.ewmaBw);
     this.ewmaRtt = 0.8 * this.ewmaRtt + 0.2 * rttSample;
-    const bwSample = buf.length / Math.max(0.005, dt - this.ewmaRtt);
-    this.ewmaBw = 0.8 * this.ewmaBw + 0.2 * Math.min(bwSample, 5e8);
+    this.ewmaBw = 0.8 * this.ewmaBw + 0.2 * (buf.length / dt);
     if (resp.status !== 206 && buf.length !== end - start + 1) {
       throw new Error(`server at ${this.url} does not support Range requests`);
     }
@@ -370,6 +395,7 @@ export class HttpRangeSource implements ByteSource {
     // Copy: `data` is often a subarray of a large multi-chunk fetch buffer,
     // and storing the view would pin the whole buffer for the chunk's
     // lifetime in the LRU.
+    this.cache.delete(c);
     this.cache.set(c, data.slice());
     if (persist) this.chunkStore?.put(c, data);
   }
@@ -383,6 +409,7 @@ export class HttpRangeSource implements ByteSource {
   view(start: number, end: number, out: ViewHolder): boolean {
     const c = Math.floor(start / this.chunkSize);
     if (c !== Math.floor((end - 1) / this.chunkSize)) return false;
+
     const chunk = this.cache.get(c);
     if (!chunk) return false;
     // Refresh LRU position, matching what byte() reads would have done.

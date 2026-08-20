@@ -46,6 +46,9 @@ export class Box {
 
   /** Collapse to a single NFA (eager product); cached. */
   materialize(): Nfa {
+    if (this.and.length === 0) {
+      return new Nfa();
+    }
     if (this.and.length > 1) {
       const merged = new Nfa();
       intersectExprs(this.and, merged);
@@ -54,6 +57,7 @@ export class Box {
     return this.and[0];
   }
 }
+
 
 function epsilonNfa(): Nfa {
   const nfa = new Nfa();
@@ -241,11 +245,14 @@ function parseAtom(
       negate = true;
       ++p;
     }
+    const rangeStart = p;
     while (s[p] !== "]") {
       if (p >= s.length) return null;
-      if (s[p] === "-") {
+      const isRange = p > rangeStart && p + 1 < s.length && s[p + 1] !== "]";
+      if (s[p] === "-" && isRange) {
         const first = s.charCodeAt(p - 1);
         const last = s.charCodeAt(p + 1);
+        if (last < first) return null;
         for (let c = first + 1; c <= last; ++c) {
           const isOk =
             (c >= 0x61 && c <= 0x7a) ||
@@ -263,6 +270,7 @@ function parseAtom(
     }
     ++p;
   } else {
+
     const n = parseCharClass(s, p, chars);
     if (n === null) return null;
     p = n;

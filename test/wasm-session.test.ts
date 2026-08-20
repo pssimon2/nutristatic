@@ -115,4 +115,19 @@ describe("WasmSession parity", () => {
     expect(progress).toBeGreaterThan(0); // fires at 100k-step boundaries
     expect(yields).toBeGreaterThan(0); // fires every ~20k steps
   });
+
+  it("handles empty language and impossible intersections gracefully", async () => {
+    const session1 = new WasmSession(engine, '"[^a-z0-9 ]"');
+    const out1: string[] = [];
+    const status1 = await session1.run(BUDGET, MAX_RESULTS, (r) => out1.push(r.text));
+    expect(status1).toBe("exhausted");
+    expect(out1.length).toBe(0);
+
+    const session2 = new WasmSession(engine, '"solar"&"system"');
+    const out2: string[] = [];
+    const status2 = await session2.run(BUDGET, MAX_RESULTS, (r) => out2.push(r.text));
+    expect(status2).toBe("exhausted");
+    expect(out2.length).toBe(0);
+  });
 });
+

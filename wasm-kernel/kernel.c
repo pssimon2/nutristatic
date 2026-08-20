@@ -477,7 +477,9 @@ static void parse_children_body(u32 n, u32 num) {
   num &= 0x1F;
   if (num == 0) num = idx[--n];
   u32 size = count_size + offset_size + 1;
+  if (num == 0 || n < num * size) return;
   u32 start = n - num * size;
+
   for (u32 p = start; p < n; p += size) {
     u8 ch = idx[p];
     f64 ccount;
@@ -618,8 +620,10 @@ __attribute__((export_name("seed"))) i32 seed(f64 total_) {
 
   for (u32 i = 0; i < width; ++i) {
     Sub *s = &subs[i];
+    if (s->start == NO_ID || s->n_nfa == 0) return -1;
     for (u32 w = 0; w < (s->n_nfa + 31) / 32; ++w) s->mark[w] = 0;
     s->mark[s->start >> 5] |= 1u << (s->start & 31);
+
     scratch_stack[0] = s->start;
     u32 count = close_and_collect(s, scratch_stack, 1);
     u32 id = count == NO_ID ? NO_ID : sub_intern(s, count);

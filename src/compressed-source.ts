@@ -292,9 +292,11 @@ export class CompressedRangeSource implements ByteSource {
   }
 
   private insertBlock(b: number, data: Uint8Array, persist: boolean): void {
+    this.cache.delete(b);
     this.cache.set(b, data);
     if (persist) this.chunkStore?.put(b, data);
   }
+
 
   private evict(keepFirst: number, keepLast: number): void {
     while (this.cache.size > this.maxBlocks) {

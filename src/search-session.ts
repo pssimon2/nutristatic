@@ -77,6 +77,7 @@ export class SearchSession {
       this.outOfStates = true;
       return "complex";
     }
-    return this.steps >= maxSteps ? "limit" : "results";
+    return results >= maxResults ? "results" : "limit";
   }
 }
+

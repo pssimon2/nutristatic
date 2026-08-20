@@ -38,7 +38,12 @@ int main(int argc, char **argv) {
   FILE **workers = calloc(n, sizeof(FILE *));
   for (int i = 0; i < n; ++i) {
     char cmd[4096];
-    snprintf(cmd, sizeof cmd, argv[2], i);
+    const char *p = strstr(argv[2], "%d");
+    if (p) {
+      snprintf(cmd, sizeof cmd, "%.*s%d%s", (int)(p - argv[2]), argv[2], i, p + 2);
+    } else {
+      snprintf(cmd, sizeof cmd, "%s", argv[2]);
+    }
     workers[i] = popen(cmd, "w");
     if (!workers[i]) {
       perror("popen");
@@ -46,9 +51,11 @@ int main(int argc, char **argv) {
     }
     // A large kernel pipe absorbs bursts so one slow worker doesn't stall
     // the round-robin for everyone (head-of-line blocking).
+#ifdef F_SETPIPE_SZ
     if (fcntl(fileno(workers[i]), F_SETPIPE_SZ, PIPE_SIZE) < 0) {
       // Not fatal; the default 64KB just parallelizes worse.
     }
+#endif
     fputs("<mediawiki>\n", workers[i]);
   }
 
@@ -69,8 +76,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "xml-split: page larger than 1GB?\n");
         return 1;
       }
-      data = realloc(data, cap);
+      char *new_data = realloc(data, cap);
+      if (!new_data) {
+        free(data);
+        fprintf(stderr, "xml-split: out of memory\n");
+        return 1;
+      }
+      data = new_data;
     }
+
     size_t got = fread(data + len, 1, BUF_SIZE, stdin);
     if (got == 0) break;
     len += got;

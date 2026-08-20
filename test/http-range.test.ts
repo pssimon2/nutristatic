@@ -121,4 +121,27 @@ describe("HttpRangeSource", () => {
     // legitimately aggressive, so only assert we don't grossly re-fetch.
     expect(source.bytesFetched).toBeLessThan(data.length * 1.5);
   }, 60000);
+
+  it("LRU cache evicts properly and does not stall on in-place chunk re-insertion", async () => {
+    const source = await HttpRangeSource.open(`${baseUrl}/demo.index`, {
+      chunkSize: 1024,
+      maxChunks: 4,
+    });
+    // Ensure chunks 0, 1, 2, 3 (fills cache of 4 chunks)
+    await source.ensure(0, 4096);
+    // Re-access chunk 0 (triggers in-place refresh to MRU)
+    await source.ensure(0, 1024);
+    // Now ensure chunks 4, 5 (loads 2 chunks, must evict oldest chunks 1 and 2)
+    await source.ensure(4096, 6144);
+    const cacheMap = (source as unknown as { cache: Map<number, Uint8Array> }).cache;
+    expect(cacheMap.size).toBe(4);
+    // Chunk 0 was refreshed to MRU, so it must still be present; chunks 1 and 2 were evicted
+    expect(cacheMap.has(0)).toBe(true);
+    expect(cacheMap.has(1)).toBe(false);
+    expect(cacheMap.has(2)).toBe(false);
+    expect(cacheMap.has(4)).toBe(true);
+    expect(cacheMap.has(5)).toBe(true);
+  });
 });
+
+

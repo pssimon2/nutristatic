@@ -1,6 +1,6 @@
 <html><head>
   <title>Nutristatic Usage Guide</title>
-  <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
+  <link rel="icon" type="image/vnd.microsoft.icon" href="./favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     /* Match the search page: follow the OS theme. */
@@ -14,7 +14,8 @@
   </style>
 </head><body>
 
-<h1><a href="/">Nutristatic</a> Usage Guide</h1>
+<h1><a href="./">Nutristatic</a> Usage Guide</h1>
+
 
 <ul>
 <li><a href="#what">What It Is</a>
@@ -128,6 +129,7 @@ commonly used classes of characters:</p>
 <tt>[a-z0-9]</tt>
 <dd><tt><b>-</b></tt> (hyphen) - an optional space, equivalent to <tt>( ?)</tt>
 <dd><tt><b>#</b></tt> (number sign) - any digit, equivalent to <tt>[0-9]</tt>
+<dd><tt><b>[^...]</b></tt> - negated character class, matching any character in the alphabet not listed (e.g. <tt>[^aeiou]</tt>)
 </dl>
 
 <p>Note that the hyphen and the underscore (as opposed to the standard regular
@@ -135,11 +137,13 @@ expression dot "<tt>.</tt>") are only really useful inside
 "<a href="#syntax_quotes">quoted phrases</a>", though technically they are
 allowed anywhere.</p>
 
+<p>Repeat quantifiers (<tt>{n}</tt>, <tt>{min,max}</tt>) are supported with limits up to 255.</p>
+
 <h4><a name="syntax_quotes">"Quoted Phrases"</a></h4>
 
 <p>By default, spaces may be inserted anywhere in the
 expression when matching. That means that an expression like
-<tt><a href="/?q=CVCVCVCVCV">CVCVCVCVCV</a></tt> (five alternating
+<tt><a href="./?q=CVCVCVCVCV">CVCVCVCVCV</a></tt> (five alternating
 consonant-vowel pairs) matches words like "literature" as well as phrase
 fragments like "have become" or "was used as a".</p>
 
@@ -147,10 +151,10 @@ fragments like "have become" or "was used as a".</p>
 phrases</em>"</tt> in the pattern.
 Within the quotation marks, spaces will not be inserted unless the pattern
 specifically allows them. So the expression
-<tt><a href="/?q=%22CVCVCVCVCV%22">"CVCVCVCVCV"</a></tt> only matches single
-10-letter words; <tt><a href="/?q=%22CVCVC-VCVCV%22">"CVCVC-VCVCV"</a></tt>
+<tt><a href="./?q=%22CVCVCVCVCV%22">"CVCVCVCVCV"</a></tt> only matches single
+10-letter words; <tt><a href="./?q=%22CVCVC-VCVCV%22">"CVCVC-VCVCV"</a></tt>
 matches either single words or evenly split pairs of 5-letter words;
-<tt><a href="/?q=%22CVCVC%20VCVCV%22">"CVCVC VCVCV"</a></tt> matches only pairs
+<tt><a href="./?q=%22CVCVC%20VCVCV%22">"CVCVC VCVCV"</a></tt> matches only pairs
 of 5-letter words.</p>
 
 <p>Quotation marks can be used on all or part of the query, as desired.</p>
@@ -160,7 +164,7 @@ of 5-letter words.</p>
 <p>By analogy with the standard <tt>|</tt> (alternation) operator, the &amp;
 operator requires both sides to match for the pattern to match. This is useful
 for applying several constraints in parallel. For example,
-<tt><a href="/?q=%22_*a_*%26_*b_*%26_*c_*%26_{5,}%22">"_*a_*&amp;_*b_*&amp;_*c_*&amp;_{5,}"</a></tt>
+<tt><a href="./?q=%22_*a_*%26_*b_*%26_*c_*%26_{5,}%22">"_*a_*&amp;_*b_*&amp;_*c_*&amp;_{5,}"</a></tt>
 matches single words that contain all of "a", "b" and "c" (but in no
 particular order) and are also at least 5 letters long overall.</p>
 
@@ -172,17 +176,18 @@ each added constraint's rarity.)</p>
 
 <p>Text inside <tt>&lt;<em>angle brackets</em>&gt;</tt> matches anything that
 contains the same parts but in any order. So
-<tt><a href="/?q=%3Ccat%3E">&lt;act&gt;</a></tt> matches "act", "cat", "atc" and
+<tt><a href="./?q=%3Cact%3E">&lt;act&gt;</a></tt> matches "act", "cat", "atc" and
 so on.</p>
 
 <p>The parts of an anagram are normally letters, but can themselves be any
 regular expression (in parentheses). For example,
-<tt><a href="/?q=%3C%28ag%29%28m%29%28ra%29__%3E">&lt;(ag)(m)(ra)__&gt;</a></tt>
+<tt><a href="./?q=%3C%28ag%29%28m%29%28ra%29__%3E">&lt;(ag)(m)(ra)__&gt;</a></tt>
 matches any 7-letter word or phrase containing "ag", "m", "ra", and any
 other two letters. Anagrams can also be part of a larger expression, if
 you have partial information about the order of something, such as
-<tt><a href="/?q=%3Caan%3Eg%3Camr%3E">&lt;aan&gt;g&lt;amr&gt;</a></tt> which
+<tt><a href="./?q=%3Caan%3Eg%3Camr%3E">&lt;aan&gt;g&lt;amr&gt;</a></tt> which
 matches "anagram" but not "margana".</p>
+
 
 <p>Remember, if you want to restrict your anagram to single words, use
 "<a href="#syntax_quotes">quoted phrases</a>".</p>
@@ -218,7 +223,7 @@ at least 5 letters using a possibly-empty suffix of the first part, a filled
 in letter, and a possibly-empty prefix of the second part. For that first
 row, this pattern locates all such words:</p>
 
-<pre><a href="/?q=%22(((((m?o)?c)?h)?i)?t)?_(h(a(t(o(ry?)?)?)?)?)?%26_{5,}%22">"(((((m?o)?c)?h)?i)?t)?_(h(a(t(o(ry?)?)?)?)?)?&amp;_{5,}"</a></pre>
+<pre><a href="./?q=%22(((((m?o)?c)?h)?i)?t)?_(h(a(t(o(ry?)?)?)?)?)?%26_{5,}%22">"(((((m?o)?c)?h)?i)?t)?_(h(a(t(o(ry?)?)?)?)?)?&amp;_{5,}"</a></pre>
 
 <p>Note that the puzzle directions further require "common non-plural,
 non-capitalized English" words, and that each letter (A-Z) be used exactly once;
@@ -236,7 +241,7 @@ three will be left over for future use. The boldface letters indicate the
 start of a word in the clue (a word break happens just before each boldface
 letter). This pattern finds the solution:</p>
 
-<pre><a href="/?q=%22<(-may)%3F(-sit)%3F(tit)%3F(ble)%3F(com)%3F(iks)%3F(ial)%3F(im%20b)%3F(-mon)%3F>%22%26(_{18})">"&lt;(-may)?(-sit)?(tit)?(ble)?(com)?(iks)?(ial)?(im b)?(-mon)?&gt;"&amp;(_{18})</a></pre>
+<pre><a href="./?q=%22<(-may)%3F(-sit)%3F(tit)%3F(ble)%3F(com)%3F(iks)%3F(ial)%3F(im%20b)%3F(-mon)%3F>%22%26(_{18})">"&lt;(-may)?(-sit)?(tit)?(ble)?(com)?(iks)?(ial)?(im b)?(-mon)?&gt;"&amp;(_{18})</a></pre>
 
 <p>The anagram operator is used to reorder the triples. Each triple is made
 individually optional in the anagram, but a constraint is added to the end
@@ -256,7 +261,7 @@ assume the puzzle designer didn't include any extraneous letters, so this is
 like an anagram with repeated letters collapsed into one. This pattern finds
 what can be formed from one of these letter banks:</p>
 
-<pre><a href="/?q=[aehimnprsw]*%26_*a_*%26_*e_*%26_*h_*%26_*i_*%26_*m_*%26_*n_*%26_*p_*%26_*r_*%26_*s_*%26_*w_*">[aehimnprsw]*&amp;_*a_*&amp;_*e_*&amp;_*h_*&amp;_*i_*&amp;_*m_*&amp;_*n_*&amp;_*p_*&amp;_*r_*&amp;_*s_*&amp;_*w_*</a></pre>
+<pre><a href="./?q=[aehimnprsw]*%26_*a_*%26_*e_*%26_*h_*%26_*i_*%26_*m_*%26_*n_*%26_*p_*%26_*r_*%26_*s_*%26_*w_*">[aehimnprsw]*&amp;_*a_*&amp;_*e_*&amp;_*h_*&amp;_*i_*&amp;_*m_*&amp;_*n_*&amp;_*p_*&amp;_*r_*&amp;_*s_*&amp;_*w_*</a></pre>
 
 <p>This rather cumbersome expression requires a phrase made from letters in the
 bank and also (this is the cumbersome part) requires each letter to be used
@@ -272,7 +277,7 @@ depicted objects with one letter removed from each. For example, one of the
 stars contained drawings of CHARM, ELTON, CHEST, and ONE. This pattern finds
 what can be made from this with one letter dropped from each:</p>
 
-<pre><a href="/?q=%28c%3Fh%3Fa%3Fr%3Fm%3F%26_%7B4%7D%29%28e%3Fl%3Ft%3Fo%3Fn%3F%26_%7B4%7D%29%28c%3Fh%3Fe%3Fs%3Ft%3F%26_%7B4%7D%29%28o%3Fn%3Fe%3F%26_%7B2%7D%29">(c?h?a?r?m?&amp;_{4})(e?l?t?o?n?&amp;_{4})(c?h?e?s?t?&amp;_{4})(o?n?e?&amp;_{2})</a></pre>
+<pre><a href="./?q=%28c%3Fh%3Fa%3Fr%3Fm%3F%26_%7B4%7D%29%28e%3Fl%3Ft%3Fo%3Fn%3F%26_%7B4%7D%29%28c%3Fh%3Fe%3Fs%3Ft%3F%26_%7B4%7D%29%28o%3Fn%3Fe%3F%26_%7B2%7D%29">(c?h?a?r?m?&amp;_{4})(e?l?t?o?n?&amp;_{4})(c?h?e?s?t?&amp;_{4})(o?n?e?&amp;_{2})</a></pre>
 
 <p>Within each word, every letter is optional, but a constraint is also added
 to the subpattern requiring that N-1 of the letters be used. The answer
@@ -285,7 +290,7 @@ nonsense strings like "SEPAP" and "HEGM" and "add water" by inserting the
 letters W, A, T, E, R -- in that order, but not necessarily consecutively --
 into the given letters. This pattern finds the answer for HEGM:</p>
 
-<pre><a href="/?q=%3Cwaterhegm%3E%26_*w_*a_*t_*e_*r_*">&lt;waterhegm&gt;&amp;_*w_*a_*t_*e_*r_*</a></pre>
+<pre><a href="./?q=%3Cwaterhegm%3E%26_*w_*a_*t_*e_*r_*">&lt;waterhegm&gt;&amp;_*w_*a_*t_*e_*r_*</a></pre>
 
 <p>The word is required to be an anagram of &lt;waterhegm&gt; with the added
 constraint that the letters in "water" appear in that order. The answer "wheat
@@ -297,7 +302,7 @@ germ" shows up on top.</p>
 a series of (mostly) three-letter chunks. The series was in the right order,
 but the chunks were scrambled internally:</p>
 
-<pre><a href="/?q=%3Chet%3E%3Cral%3E%3Cseg%3E%3Ctan%3E%3Crut%3E%3Cbla%3E%3Coody%3E%3Cafl%3E%3Cndi%3E%3Ccin%3E%3Cawe%3E%3Cter%3E">&lt;het&gt;&lt;ral&gt;&lt;seg&gt;&lt;tan&gt;&lt;rut&gt;&lt;bla&gt;&lt;oody&gt;&lt;afl&gt;&lt;ndi&gt;&lt;cin&gt;&lt;awe&gt;&lt;ter&gt;</a></pre>
+<pre><a href="./?q=%3Chet%3E%3Cral%3E%3Cseg%3E%3Ctan%3E%3Crut%3E%3Cbla%3E%3Coody%3E%3Cafl%3E%3Cndi%3E%3Ccin%3E%3Cawe%3E%3Cter%3E">&lt;het&gt;&lt;ral&gt;&lt;seg&gt;&lt;tan&gt;&lt;rut&gt;&lt;bla&gt;&lt;oody&gt;&lt;afl&gt;&lt;ndi&gt;&lt;cin&gt;&lt;awe&gt;&lt;ter&gt;</a></pre>
 
 <p>The answer, "the largest natural body of land in ice water", shows up first.
 (Interpreting it requires some cleverness by the human solver!)</p>
@@ -349,9 +354,9 @@ time; the downloaded-index mode has no such cost at all).</p>
 <p>Because the search proceeds forward from the start of the answer string,
 patterns which are constrained at the beginning work much better than patterns
 which are constrained at the end. For example,
-<tt><a href="/?q=the_*">the_*</a></tt>
+<tt><a href="./?q=the_*">the_*</a></tt>
 gives results very quickly;
-<tt><a href="/?q=_*est">_*est</a></tt> takes a long time to return. The first
+<tt><a href="./?q=_*est">_*est</a></tt> takes a long time to return. The first
 pattern can walk the subtrie starting with "the"; the second pattern
 effectively walks every word and phrase in the index in frequency order,
 checking for each one whether it ends in "est".</p>

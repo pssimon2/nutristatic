@@ -381,8 +381,14 @@ export class IndexReader {
       remaining -= childCount;
     }
 
+    if (count > 0 && remaining < 0) {
+      this.fail(cursor, "child counts exceed parent count");
+    }
+
+
     return remaining;
   }
+
 
   private fail(n: number, message: string): never {
     throw new Error(`index error: pos ${n}: ${message}`);

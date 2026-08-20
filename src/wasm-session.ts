@@ -276,9 +276,18 @@ export class WasmSession {
       parseExpr(" ", 0, space, true);
       conjunct.concat(space);
     }
-    engine.beginQuery(box.and.map((c) => trim(c)));
-    engine.owner = this;
+    const trimmed = box.and.map((c) => trim(c));
+    const hasEmpty = trimmed.some(
+      (t) => t.start === -1 || t.finals.size === 0 || t.arcs.length === 0,
+    );
+    if (hasEmpty) {
+      this.exhausted = true;
+    } else {
+      engine.beginQuery(trimmed);
+      engine.owner = this;
+    }
   }
+
 
   /** Same contract as SearchSession.run (resumable, streaming, yielding). */
   async run(
@@ -329,6 +338,7 @@ export class WasmSession {
         if (y instanceof Promise) await y;
       }
     }
-    return this.steps >= maxSteps ? "limit" : "results";
+    return results >= maxResults ? "results" : "limit";
   }
 }
+

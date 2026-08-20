@@ -18,14 +18,18 @@
     "wordlist-index": "tsx cli/wordlist-index.ts",
     "compress-index": "tsx cli/compress-index.ts",
     "build-wasm": "clang --target=wasm32-unknown-unknown -O3 -nostdlib -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined -Wl,--initial-memory=17039360 -Wl,--max-memory=3221225472 -o wasm-kernel/kernel.wasm wasm-kernel/kernel.c",
-    "build-offline": "node scripts/build-offline.mjs"
+    "build-offline": "node scripts/build-offline.mjs",
+    "build-sw": "node scripts/build-sw.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "esbuild": "^0.23.0",
     "playwright-core": "^1.62.1",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0",
     "vitest": "^2.0.0"
   }
+
 }
