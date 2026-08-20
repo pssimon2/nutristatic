@@ -4,11 +4,12 @@ The full search engine — best-first walk plus the lazy-filter machinery
 (on-demand subset construction per conjunct NFA, lazy product of conjuncts,
 tuple/subset interning via open-addressed hashes) — compiled to WebAssembly
 from freestanding C. The web worker runs it for fully-local indexes (memory
-mode, or an OPFS disk copy ≤ 800 MB, where the index is copied into linear
-memory); range mode and any WASM failure use the JS engine, which is the
-reference implementation and the fallback. The kernel's link-time memory
-cap is 3 GB; the worker's 800 MB disk-copy gate is its own, deliberately
-conservative bound.
+mode, or an OPFS disk copy, with the index copied into linear memory);
+range mode and any WASM failure use the JS engine, which is the reference
+implementation and the fallback. The kernel's link-time memory cap is 3 GB;
+the index may use up to ~2.4 GB of it (`KERNEL_INDEX_CAP` in
+src/wasm-session.ts), which admits every bundled index including the
+English device copy.
 
 - `kernel.c` — the engine in freestanding C, compiled with plain clang
   (`--target=wasm32-unknown-unknown`, no Emscripten). Index bytes and the

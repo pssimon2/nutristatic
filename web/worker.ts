@@ -16,7 +16,12 @@ import { inflateRawBlock } from "../src/idxz.js";
 import { IndexReader } from "../src/index-reader.js";
 import { ParseError } from "../src/find-expr.js";
 import { SearchSession } from "../src/search-session.js";
-import { WasmCapacityError, WasmEngine, WasmSession } from "../src/wasm-session.js";
+import {
+  KERNEL_INDEX_CAP,
+  WasmCapacityError,
+  WasmEngine,
+  WasmSession,
+} from "../src/wasm-session.js";
 import kernelUrl from "../wasm-kernel/kernel.wasm?url";
 
 // Indexes up to this size are simply downloaded; everything bigger defaults
@@ -172,10 +177,14 @@ let currentValidator: string | null = null; // ETag/Last-Modified from probe
 
 // ---- WASM engine ----
 // Used when the whole index is locally available: memory mode always, disk
-// (OPFS) mode up to this size — the kernel needs the index in linear memory,
-// so range mode (async fetches mid-search) stays on the JS engine. Any WASM
-// failure falls back to JS; both engines emit identical score-streams.
-const WASM_INDEX_LIMIT = 800 * 1024 * 1024;
+// (OPFS) mode up to the kernel's index cap — the kernel needs the index in
+// linear memory, so range mode (async fetches mid-search) stays on the JS
+// engine. Any WASM failure falls back to JS; both engines emit identical
+// score-streams. The cap admits every bundled index including English
+// Wikipedia's device copy; a machine that cannot actually grow WASM memory
+// that far fails instantiation, which is treated as "use the JS engine" —
+// an upper bound, not a promise.
+const WASM_INDEX_LIMIT = KERNEL_INDEX_CAP;
 let wasmModule: Promise<WebAssembly.Module> | null = null;
 // Single-flight per index: a second search racing the first engine creation
 // must await the SAME instance, not build a second full index copy.

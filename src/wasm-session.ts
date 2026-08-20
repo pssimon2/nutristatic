@@ -41,6 +41,13 @@ const IO_BYTES = 16 + 512; // result mailbox: steps, len, score, text
 const PARSE_CACHE_BYTES = 88 * 1024 * 1024;
 const PAGE = 65536;
 
+/**
+ * Largest index the kernel takes: the link-time cap on kernel memory is 3GB,
+ * and the index plus the reserved frontier/crumb/DFA/parse-cache capacities
+ * above must fit inside it.
+ */
+export const KERNEL_INDEX_CAP = 2_400 * 1024 * 1024;
+
 interface KernelExports {
   memory: WebAssembly.Memory;
   walloc(n: number): number;
