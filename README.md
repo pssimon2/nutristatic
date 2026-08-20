@@ -129,4 +129,4 @@ responses are managed by the app's own Cache Storage layer.
  
 GPL-2.0, same as Nutrimatic, which this is derived from.
 - Original Nutrimatic: Copyright (C) Dan Egnor and contributors
-- Nutristatic: Copyright (C) 2026 Simon and contributors
+- Nutristatic: Copyright (C) 2026 Simon Stroh and contributors
