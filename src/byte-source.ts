@@ -374,7 +374,15 @@ export class HttpRangeSource implements ByteSource {
     const dt = Math.max(0.001, (Date.now() - t0) / 1000);
     const rttSample = Math.max(0.005, dt - buf.length / this.ewmaBw);
     this.ewmaRtt = 0.8 * this.ewmaRtt + 0.2 * rttSample;
-    this.ewmaBw = 0.8 * this.ewmaBw + 0.2 * (buf.length / dt);
+    // Bandwidth excludes the latency the RTT estimate above accounts for:
+    // `bytes / dt` would fold one into the other, and the two estimators feed
+    // each other, so the pair collapses — a low bandwidth estimate drives
+    // rttSample to its floor, which drives the read-ahead window (bw × rtt)
+    // to zero. Simulated across 2 Mbps/150 ms to 300 Mbps/20 ms, that costs
+    // every chunk of read-ahead on every profile. The clamp keeps a fast
+    // cache-served response from spiking the estimate.
+    const bwSample = buf.length / Math.max(0.005, dt - this.ewmaRtt);
+    this.ewmaBw = 0.8 * this.ewmaBw + 0.2 * Math.min(bwSample, 5e8);
     if (resp.status !== 206 && buf.length !== end - start + 1) {
       throw new Error(`server at ${this.url} does not support Range requests`);
     }
